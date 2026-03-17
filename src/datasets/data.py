@@ -112,7 +112,7 @@ class SINDData(BaseData):
         n_proc = config["n_proc"] if n_proc is None else n_proc
         self.set_num_processes(n_proc=n_proc)
         self.config = config
-        self.feature_names = ["x", "y", "vx", "vy", "ax", "ay"]
+        self.feature_names = ['X', 'Y', 'Speed', 'Acceleration', 'Heading', 'AngularVelocity', 'LaneID', 'LaneDist', 'Neigh1_Rx', 'Neigh1_Ry', 'Neigh1_RSpeed', 'Neigh1_RHeading', 'Neigh2_Rx', 'Neigh2_Ry', 'Neigh2_RSpeed', 'Neigh2_RHeading', 'Neigh3_Rx', 'Neigh3_Ry', 'Neigh3_RSpeed', 'Neigh3_RHeading', 'AvgDistToSender', 'AvgMsgDelay', 'PacketLossRate']
         self.all_df = None
         self.all_IDs = None
         self.feature_df = None
@@ -144,7 +144,7 @@ class SINDData(BaseData):
                 self.all_df.index.unique()
             )  # all sample (session) IDs # 13088 # CHECK THE TIMESTAMP
 
-            self.feature_df = self.all_df[self.feature_names]
+            self.feature_df = self.all_df[self.feature_names].astype(np.float32)
 
     def load_all(self, root_dir, pattern=None):
         """
@@ -168,10 +168,14 @@ class SINDData(BaseData):
                     len(data_paths), _n_proc
                 )
             )
-            with Pool(processes=_n_proc) as pool:
-                all_df = pd.concat(pool.map(SINDData.load_single, data_paths))
+            try:
+                with Pool(processes=_n_proc) as pool:
+                    all_df = pd.concat(pool.map(SINDData.load_single, data_paths), ignore_index=True)
+            except Exception as e:
+                logger.warning(f"Multiprocessing failed ({e}). Falling back to sequential loading to save memory...")
+                all_df = pd.concat([SINDData.load_single(path) for path in data_paths], ignore_index=True)
         else:  # read 1 file at a time
-            all_df = pd.concat(SINDData.load_single(path) for path in data_paths)
+            all_df = pd.concat([SINDData.load_single(path) for path in data_paths], ignore_index=True)
 
         return all_df
 
@@ -191,7 +195,7 @@ class SINDData(BaseData):
     @staticmethod
     def read_data(filepath):
         """Reads a single .csv, which typically contains a set of datasets of various machine sessions."""
-        file_name = os.path.basename(os.path.dirname(filepath))
+        file_name = os.path.basename(filepath).split('.')[0]
         df = pd.read_csv(filepath)
         df["file_id"] = file_name
 
@@ -200,10 +204,17 @@ class SINDData(BaseData):
     @staticmethod
     def sort_clean_data(df):
         """"""
-        keep_cols = ["track_id", "timestamp_ms", "x", "y", "vx", "vy", "ax", "ay"]
+        if "track_id" not in df.columns:
+            df["track_id"] = df.get("VehicleID", df.get("car_id", df["file_id"]))
+            
+        keep_cols = ["track_id", "Time", 'X', 'Y', 'Speed', 'Acceleration', 'Heading', 'AngularVelocity', 'LaneID', 'LaneDist', 'Neigh1_Rx', 'Neigh1_Ry', 'Neigh1_RSpeed', 'Neigh1_RHeading', 'Neigh2_Rx', 'Neigh2_Ry', 'Neigh2_RSpeed', 'Neigh2_RHeading', 'Neigh3_Rx', 'Neigh3_Ry', 'Neigh3_RSpeed', 'Neigh3_RHeading', 'AvgDistToSender', 'AvgMsgDelay', 'PacketLossRate']
 
+        # Factorize non-numeric columns like LaneID into integers
+        if 'LaneID' in df.columns:
+            df['LaneID'] = pd.factorize(df['LaneID'])[0]
+            
         # sort based on time and id
-        df_sorted = df.sort_values(by=["track_id", "timestamp_ms"])
+        df_sorted = df.sort_values(by=["track_id", "Time"])
 
         # make track id unique among different files
         df_sorted["track_id"] = (
@@ -213,13 +224,9 @@ class SINDData(BaseData):
         # keep columns
         df_final = df_sorted[keep_cols]
 
-        # remove_stationary_trajectories
-        df_final = df_final[
-            df_final.groupby("track_id")[["vx", "vy"]].transform(any).all(axis=1)
-        ]
-
-        # # remove incorrent datarows
-        # df_final = df_final[(df_final["vx"] >= 0) & (df_final["vy"] >= 0)]
+        # remove_stationary_trajectories efficiently without massive memory transform
+        has_speed = df_final.groupby("track_id")["Speed"].transform("max") > 0
+        df_final = df_final[has_speed]
 
         return df_final
 
@@ -253,7 +260,10 @@ class SINDData(BaseData):
     @staticmethod
     def assign_chunk_idx(df, chunk_len):
         """Assigns a chunk index to each row and trajectory."""
-        # Calculate local chunk indices within each unique trajectory
+        if chunk_len <= 0:
+            chunk_len = 50  # Fallback to safe sequence length
+            
+        # Calculate local chunk indices within each unique trajectory safely
         df["chunk_idx"] = df.groupby("track_id").cumcount() // chunk_len
 
         # Generate a global chunk ID by enumerating each unique combination of unique_int_id and chunk_idx
