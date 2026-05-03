@@ -19,12 +19,11 @@ ROOT = os.getcwd()
 
 def run(hyperparameter_config: dict):
     # Pretty print the run args
-    hyperparameter_config["data_dir"] = ROOT + "/resources/SinD/Data"
+    hyperparameter_config["data_dir"] = ROOT + "/resources/VANET_data/raw/"
     hyperparameter_config["data_class"] = "sind"
-    hyperparameter_config["pattern"] = "Ped_smoothed_tracks"
-    hyperparameter_config["data_class"] = "sind"
+    hyperparameter_config["pattern"] = "data_car_"
     hyperparameter_config["pos_encoding"] = "learnable"
-    hyperparameter_config["name"] = "SINDDataset_pretrained"
+    hyperparameter_config["name"] = "VANETDataset_pretrained"
     hyperparameter_config["comment"] = (
         "pretraining_through_imputation-hyperparameter_tuning"
     )
@@ -42,27 +41,43 @@ def run(hyperparameter_config: dict):
 
 
 if __name__ == "__main__":
+    os.environ["RAY_memory_monitor_refresh_ms"] = "0"  # Disable Ray's aggressive memory killer
     N_ITER = 1000
-    ray.init(num_cpus=12, num_gpus=1)
+    ray.init()  # Let Ray auto-detect available resources (e.g. Colab's 2 CPUs)
     searcher = HyperOptSearch(
         space=hyperparameter_config,
         metric="loss",
         mode="min",
         n_initial_points=int(N_ITER / 10),
     )
-    algo = ConcurrencyLimiter(searcher, max_concurrent=6)
+    import torch
+    import multiprocessing
+    
+    num_gpus = 1 if torch.cuda.is_available() else 0
+    # Automatically detect CPUs and leave 1 free for the OS/Ray background tasks
+    usable_cpus = max(1, multiprocessing.cpu_count() - 1)
+    
+    algo = ConcurrencyLimiter(searcher, max_concurrent=1)  # Keep 1 trial at a time to prevent RAM crashes
     objective = tune.with_resources(
-        tune.with_parameters(run), resources={"cpu": 12, "gpu": 1}
+        tune.with_parameters(run), resources={"cpu": usable_cpus, "gpu": num_gpus}  # Allocate all safe CPUs to this single trial
     )
 
     tuner = tune.Tuner(
         trainable=objective,
-        run_config=air.RunConfig(),
+        run_config=air.RunConfig(
+            name="VANET_tune",
+            storage_path=os.path.abspath("./ray_results/"),
+            checkpoint_config=air.CheckpointConfig(
+                checkpoint_at_end=False,
+                checkpoint_frequency=0
+            ),
+        ),
         tune_config=tune.TuneConfig(
             metric="loss",
             mode="min",
             search_alg=algo,
             num_samples=N_ITER,
+            trial_dirname_creator=lambda trial: f"trial_{trial.trial_id}",
         ),
     )
 

@@ -137,9 +137,9 @@ weights*
 *.pkl
 .DS_Store
 
-resources/*/*.csv
-resources/*/*_original.csv
-resources/*/*/*_original.csv
+resources/**/*.csv
+resources/**/*_original.csv
+resources/**/*_original.csv
 data_generated*
 experiments*
 *.png

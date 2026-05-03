@@ -18,7 +18,7 @@ from src.utils.model_helpers import (
 )
 from src.transformer_model.encoder import model_factory
 
-from ray import train as tune
+from ray import tune
 from src.utils.hyperparemer_tuning_config import hyperparameter_config
 
 logger = logging.getLogger("__main__")
