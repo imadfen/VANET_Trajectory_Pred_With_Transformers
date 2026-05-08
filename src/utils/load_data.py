@@ -77,18 +77,43 @@ def load_data(config, logger, save_data=True):
         logger.info("Normalizing data ...")
         import numpy as np
         if hasattr(my_data, "all_chunks"):
-            # Compute constants strictly on training data to prevent data leakage
-            train_data_stack = np.concatenate([my_data.all_chunks[i] for i in train_indices], axis=0)
+            # ----------------------------------------------------------------
+            # Global Standardization fitted ONLY on training data to prevent
+            # data leakage.  Per-sample normalization is intentionally NOT used
+            # here because absolute position/velocity values carry VANET lane
+            # semantics that must be preserved across samples.
+            # ----------------------------------------------------------------
+            train_data_stack = np.concatenate(
+                [my_data.all_chunks[i] for i in train_indices], axis=0
+            ).astype(np.float64)  # upcast to float64 for stable statistics
+
             if config["data_normalization"] in ["standardization", "per_sample_std"]:
-                mean = np.mean(train_data_stack, axis=0)
-                std = np.std(train_data_stack, axis=0)
+                mean = np.mean(train_data_stack, axis=0)   # (feat_dim,)
+                std  = np.std(train_data_stack,  axis=0)   # (feat_dim,)
+                # Guard: constant features (std==0) would produce NaN.
+                # Use 1.0 so those features map to (x - mean)/1 = 0.
+                safe_std = np.where(std < 1e-8, 1.0, std)
+                logger.info("Global train mean per feature: {}".format(
+                    dict(zip(my_data.feature_names, mean.tolist()))))
+                logger.info("Global train std  per feature: {}".format(
+                    dict(zip(my_data.feature_names, std.tolist()))))
                 for i in range(len(my_data.all_chunks)):
-                    my_data.all_chunks[i] = (my_data.all_chunks[i] - mean) / (std + 1e-8)
+                    my_data.all_chunks[i] = (
+                        (my_data.all_chunks[i].astype(np.float64) - mean) / safe_std
+                    ).astype(np.float32)
+
             elif config["data_normalization"] in ["minmax", "per_sample_minmax"]:
                 min_val = np.min(train_data_stack, axis=0)
                 max_val = np.max(train_data_stack, axis=0)
+                safe_range = np.where((max_val - min_val) < 1e-8, 1.0, max_val - min_val)
+                logger.info("Global train min per feature: {}".format(
+                    dict(zip(my_data.feature_names, min_val.tolist()))))
+                logger.info("Global train max per feature: {}".format(
+                    dict(zip(my_data.feature_names, max_val.tolist()))))
                 for i in range(len(my_data.all_chunks)):
-                    my_data.all_chunks[i] = (my_data.all_chunks[i] - min_val) / (max_val - min_val + 1e-8)
+                    my_data.all_chunks[i] = (
+                        (my_data.all_chunks[i].astype(np.float64) - min_val) / safe_range
+                    ).astype(np.float32)
         else:
             normalizer = Normalizer(config["data_normalization"])
             if len(train_indices):

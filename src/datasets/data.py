@@ -12,7 +12,14 @@ logger = logging.getLogger("__main__")
 
 class Normalizer(object):
     """
-    Normalizes dataframe across ALL contained rows (time steps). Different from per-sample normalization.
+    Global Standardization: fits mean/std on the entire **training** set (passed once via
+    `normalize(train_df)`), then the same statistics are reused for val/test.
+    This is critical for VANET data where absolute velocity/position relative to lane
+    matters — per-sample normalization destroys that signal.
+
+    For the chunk-based pipeline (SINDData.all_chunks), normalization is done directly
+    in load_data.py by stacking training chunks, computing global mean/std, and
+    normalising every chunk in-place.  This class is kept for the legacy dataframe path.
     """
 
     def __init__(self, norm_type, mean=None, std=None, min_val=None, max_val=None):
@@ -180,7 +187,11 @@ class SINDData(BaseData):
         df = SINDData.sort_clean_data(df)
         num_nan = df.isna().sum().sum()
         if num_nan > 0:
-            df = df.fillna(1000)  # NAN VALUES TO 1000
+            # Fill with 0 (mean-neutral after global standardization).
+            # NEVER fill with a large constant like 1000 — that injects values
+            # of magnitude ~10^3 which produce MSE losses ~10^6 per element,
+            # causing the observed loss divergence to ~10^16.
+            df = df.fillna(0)
         return df
 
     @staticmethod
@@ -221,32 +232,8 @@ class SINDData(BaseData):
 
         return df_final
 
-    def _gather_data_paths(self, root_dir, pattern):
-        # Implementation to gather data paths  based on a given pattern
-
-        data_paths = []  # list of all paths
-        for root, dirs, files in os.walk(root_dir):
-            for file in files:
-                data_paths.append(os.path.join(root, file))
-
-        if len(data_paths) == 0:
-            raise Exception(
-                "No files found using: {}".format(os.path.join(root_dir, "*"))
-            )
-
-        if pattern is None:
-            # by default evaluate on
-            selected_paths = data_paths
-        else:
-            selected_paths = list(filter(lambda x: re.search(pattern, x), data_paths))
-
-        input_paths = [
-            p for p in selected_paths if os.path.isfile(p) and p.endswith(".csv")
-        ]
-        if len(input_paths) == 0:
-            raise Exception("No .csv files found using pattern: '{}'".format(pattern))
-
-        return input_paths
+    # NOTE: _gather_data_paths is defined once above (lines 150-175). The duplicate
+    # copy that was here has been removed to avoid confusion.
 
     @staticmethod
     def assign_chunk_idx(df, chunk_len):

@@ -103,8 +103,13 @@ class Options(object):
                 "per_sample_minmax",
                 "none",
             },
-            default="none",
-            help="If specified, will apply normalization on the input features of a dataset.",
+            default="standardization",
+            help=(
+                "Normalization applied to input features. Defaults to 'standardization' "
+                "(global, fitted on training set only). "
+                "VANET coordinates (X~4400m, Y~5000m) are too large for raw MSE — "
+                "leaving this as 'none' causes loss divergence to ~10^16."
+            ),
         )
         self.parser.add_argument(
             "--pattern",
