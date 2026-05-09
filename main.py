@@ -39,6 +39,16 @@ def run(config, session=None):
     if device == "cuda":
         logger.info("Device index: {}".format(torch.cuda.current_device()))
 
+    if config.get("hyperparameter_tuning"):
+        from ray import tune
+        checkpoint = tune.get_checkpoint()
+        if checkpoint:
+            # We copy the checkpoint directory so we can read the model.pth inside
+            checkpoint_dir = checkpoint.to_directory()
+            config["load_model"] = os.path.join(checkpoint_dir, "model.pth")
+            config["resume"] = True
+            logger.info(f"Loaded Ray Tune checkpoint from {config['load_model']}")
+
     ## Build and split data
     train_loader, val_loader, data = load_data(config, logger, save_data=True)
 
