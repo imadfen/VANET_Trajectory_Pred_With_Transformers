@@ -6,6 +6,7 @@ import math
 from collections import OrderedDict
 
 import torch
+import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from src.utils.print_helpers import readable_time, Printer, count_parameters
 from src.utils.model_helpers import (
@@ -80,6 +81,7 @@ def create_model(config, train_loader, val_loader, data, logger, device):
         l2_reg=config["l2_reg"],
         print_interval=config["print_interval"],
         console=config["console"],
+        intent_weight=config.get("intent_weight", 0.0),
     )
 
     val_evaluator = model_class(
@@ -89,6 +91,7 @@ def create_model(config, train_loader, val_loader, data, logger, device):
         loss_module,
         print_interval=config["print_interval"],
         console=config["console"],
+        intent_weight=config.get("intent_weight", 0.0),
     )
 
     return model, optimizer, trainer, val_evaluator, start_epoch
@@ -357,6 +360,11 @@ class BaseModel(object):
 
 
 class UnsupervisedAttentionModel(BaseModel):
+    """Training and evaluation wrapper for the dual-head imputation Transformer."""
+
+    def __init__(self, *args, intent_weight: float = 0.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.intent_weight = intent_weight
 
     def train_epoch(self, epoch_num=None, max_norm=1.0):
 
@@ -373,25 +381,29 @@ class UnsupervisedAttentionModel(BaseModel):
             )  # 1s: mask and predict, 0s: unaffected input (ignore)
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
 
-            predictions, _ = self.encoder(
+            predictions, intent_logits, _, _ = self.encoder(
                 X.to(self.device), padding_masks
             )  # (batch_size, padded_length, feat_dim)
 
-            # Cascade noise masks (batch_size, padded_length, feat_dim) and padding masks (batch_size, padded_length)
-            # target_masks = target_masks * padding_masks.unsqueeze(-1)
+            # ── Imputation MSE loss ───────────────────────────────────────────
             loss = self.loss_module(
                 predictions, targets, padding_masks.unsqueeze(-1)
-            )  # (num_active,) individual loss (square error per element) for each active value in batch
+            )  # (num_active,) individual squared errors
 
             batch_loss = torch.sum(loss)
-            mean_loss = batch_loss / len(
-                loss
-            )  # mean loss (over active elements) used for optimization
+            mean_loss = batch_loss / len(loss)
+
+            # ── Optional intent CE loss (Loop B supervised fine-tuning) ───────
+            total_loss = mean_loss
+            if self.intent_weight > 0 and hasattr(self, "intent_labels"):
+                intent_labels = self.intent_labels[list(IDs)].to(self.device)
+                intent_loss = F.cross_entropy(intent_logits, intent_labels)
+                total_loss = mean_loss + self.intent_weight * intent_loss
 
             if self.l2_reg:
-                total_loss = mean_loss + self.l2_reg * l2_reg_loss(self.encoder)
+                total_loss = total_loss + self.l2_reg * l2_reg_loss(self.encoder)
             else:
-                total_loss = mean_loss
+                total_loss = mean_loss if not (self.intent_weight > 0 and hasattr(self, "intent_labels")) else total_loss
 
             # Zero gradients, perform a backward pass, and update the weights.
             self.optimizer.zero_grad()
@@ -429,6 +441,8 @@ class UnsupervisedAttentionModel(BaseModel):
                 "target_masks": [],
                 "targets": [],
                 "predictions": [],
+                "intent_logits": [],   # (B, num_intents) — for Loop B
+                "attn_maps": [],       # list of per-layer (B, T, T) — for Loop A
                 "metrics": [],
                 "IDs": [],
                 "padding_masks": [],
@@ -448,8 +462,8 @@ class UnsupervisedAttentionModel(BaseModel):
                 self.device
             )  # 0s: ignore (because they are padded)
 
-            predictions, (embeddings, embeddings_original) = self.encoder(
-                X.to(self.device), padding_masks
+            predictions, intent_logits, attn_maps, (embeddings, embeddings_original) = self.encoder(
+                X.to(self.device), padding_masks, return_attn=save_embeddings
             )  # (batch_size, padded_length, feat_dim)
 
             # Cascade noise masks (batch_size, padded_length, feat_dim) and padding masks (batch_size, padded_length)
@@ -467,6 +481,10 @@ class UnsupervisedAttentionModel(BaseModel):
                 per_batch["target_masks"].append(target_masks.cpu().numpy())
                 per_batch["targets"].append(targets.cpu().numpy())
                 per_batch["predictions"].append(predictions.cpu().numpy())
+                per_batch["intent_logits"].append(intent_logits.cpu().numpy())
+                per_batch["attn_maps"].append(
+                    [a.cpu().numpy() for a in attn_maps] if attn_maps else []
+                )
                 per_batch["metrics"].append([loss.cpu().numpy()])
                 per_batch["IDs"].append(IDs)
                 per_batch["padding_masks"].append(padding_masks.cpu().numpy())

@@ -306,6 +306,60 @@ class Options(object):
             help="Normalization layer to be used internally in transformer encoder",
         )
 
+        # ── Dual-Loop: Intent Head ─────────────────────────────────────────────
+        self.parser.add_argument(
+            "--num_intents",
+            type=int,
+            default=4,
+            help="Number of discrete intent classes for Loop B (default: 4)",
+        )
+        self.parser.add_argument(
+            "--intent_weight",
+            type=float,
+            default=0.0,
+            help="Weight of CE intent classification loss (0 = unsupervised pre-training)",
+        )
+
+        # ── Dual-Loop: Loop A thresholds ───────────────────────────────────────
+        self.parser.add_argument(
+            "--entropy_threshold",
+            type=float,
+            default=0.5,
+            help="Loop A: residual ε threshold for Low/High Entropy switch",
+        )
+        self.parser.add_argument(
+            "--beacon_hz_low",
+            type=float,
+            default=2.0,
+            help="Loop A: BSM beacon rate in Low-Entropy (stable) mode (Hz)",
+        )
+        self.parser.add_argument(
+            "--beacon_hz_high",
+            type=float,
+            default=10.0,
+            help="Loop A: BSM beacon rate in High-Entropy (alert) mode (Hz)",
+        )
+
+        # ── Dual-Loop: Loop B thresholds ───────────────────────────────────────
+        self.parser.add_argument(
+            "--relay_constant",
+            type=float,
+            default=0.1,
+            help="Loop B: MAC biasing constant C in T_wait = C / P_stable",
+        )
+        self.parser.add_argument(
+            "--relay_min_wait_ms",
+            type=float,
+            default=1.0,
+            help="Loop B: minimum relay backoff window in milliseconds",
+        )
+        self.parser.add_argument(
+            "--relay_max_wait_ms",
+            type=float,
+            default=100.0,
+            help="Loop B: maximum relay backoff window in milliseconds",
+        )
+
         # Hyperparameter tunning
         self.parser.add_argument(
             "--hyperparameter_tuning",

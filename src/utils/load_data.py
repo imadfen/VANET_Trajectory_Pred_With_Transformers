@@ -78,7 +78,10 @@ def load_data(config, logger, save_data=True):
         import numpy as np
         if hasattr(my_data, "all_chunks"):
             # Compute constants strictly on training data to prevent data leakage
-            train_data_stack = np.concatenate([my_data.all_chunks[i] for i in train_indices], axis=0)
+            if len(train_indices) > 0:
+                train_data_stack = np.concatenate([my_data.all_chunks[i] for i in train_indices], axis=0).astype(np.float64)
+            else:
+                train_data_stack = np.concatenate([my_data.all_chunks[i] for i in val_indices], axis=0).astype(np.float64)
             if config["data_normalization"] in ["standardization", "per_sample_std"]:
                 mean = np.mean(train_data_stack, axis=0)
                 std = np.std(train_data_stack, axis=0)

@@ -55,7 +55,8 @@ if __name__ == "__main__":
     
     num_gpus = 1 if torch.cuda.is_available() else 0
     # Automatically detect CPUs and leave 1 free for the OS/Ray background tasks
-    usable_cpus = max(1, multiprocessing.cpu_count() - 1)
+    # usable_cpus = max(1, multiprocessing.cpu_count() - 1)
+    usable_cpus = 1
     
     algo = ConcurrencyLimiter(searcher, max_concurrent=1)  # Keep 1 trial at a time to prevent RAM crashes
     objective = tune.with_resources(
