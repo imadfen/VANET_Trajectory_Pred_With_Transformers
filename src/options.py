@@ -109,7 +109,7 @@ class Options(object):
         self.parser.add_argument(
             "--pattern",
             type=str,
-            default="Ped_smoothed_tracks",
+            default=".*",
             help="Regex pattern used to select files contained in `data_dir`. If None, all data will be used.",
         )
         self.parser.add_argument(

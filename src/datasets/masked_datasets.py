@@ -42,7 +42,8 @@ class ImputationDataset(Dataset):
             ID: ID of sample
         """
 
-        X = self.data.loc[self.IDs[ind]].values  # (seq_length, feat_dim) array
+        # Pull processed NumPy chunk directly out of the dataset property array
+        X = self.data.all_chunks[self.IDs[ind]]  # (seq_length, feat_dim) array
         mask = noise_mask(
             X,
             self.masking_ratio,
@@ -102,7 +103,7 @@ def collate_unsuperv(data, max_len=None):
     X = X * target_masks  # mask input
 
     padding_masks = padding_mask(
-        torch.tensor(lengths, dtype=torch.int16), max_len=max_len
+        torch.tensor(lengths, dtype=torch.long), max_len=max_len
     )  # (batch_size, padded_length) boolean tensor, "1" means keep
     target_masks = ~target_masks  # inverse logic: 0 now means ignore, 1 means predict
 

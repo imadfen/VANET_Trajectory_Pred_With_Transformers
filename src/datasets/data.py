@@ -112,68 +112,67 @@ class SINDData(BaseData):
         n_proc = config["n_proc"] if n_proc is None else n_proc
         self.set_num_processes(n_proc=n_proc)
         self.config = config
-        self.feature_names = ["x", "y", "vx", "vy", "ax", "ay"]
+        self.feature_names = ['X', 'Y', 'Speed', 'Acceleration', 'Heading', 'AngularVelocity', 'LaneID', 'LaneDist', 'Neigh1_Rx', 'Neigh1_Ry', 'Neigh1_RSpeed', 'Neigh1_RHeading', 'Neigh2_Rx', 'Neigh2_Ry', 'Neigh2_RSpeed', 'Neigh2_RHeading', 'Neigh3_Rx', 'Neigh3_Ry', 'Neigh3_RSpeed', 'Neigh3_RHeading', 'AvgDistToSender', 'AvgMsgDelay', 'PacketLossRate']
         self.all_df = None
         self.all_IDs = None
         self.feature_df = None
         self.max_seq_len = self.config["data_chunk_len"]
 
     def load_data(self):
-            # Load and preprocess data
-            self.all_df = self.load_all(
-                self.config["data_dir"], pattern=self.config["pattern"]
-            )  # 508644
+            # Load and preprocess data aggressively into memory as float32 chunks
+            self.file_paths = self._gather_data_paths(self.config["data_dir"], pattern=self.config["pattern"])
+            self.max_seq_len = self.config["data_chunk_len"] if self.config["data_chunk_len"] > 0 else 50
+            
+            import gc
+            self.all_chunks = []
+            
+            for filepath in self.file_paths:
+                df = self.load_single(filepath)
+                # Group by track_id
+                for track_id, group in df.groupby("track_id"):
+                    # Extract the selected features
+                    track_data = group[self.feature_names].astype(np.float32).values
+                    # Chunk up the data using max_seq_len
+                    num_frames = len(track_data)
+                    for start_idx in range(0, num_frames, self.max_seq_len):
+                        end_idx = start_idx + self.max_seq_len
+                        chunk = track_data[start_idx:end_idx]
+                        if len(chunk) > 1: # Ignore 1-frame chunks
+                            self.all_chunks.append(chunk)
 
-            max_seq_len = self.all_df.groupby(by="track_id").size().max()  # 11726 8_7_1_P1
-            self.max_seq_len = (
-                self.config["data_chunk_len"] if self.config["data_chunk_len"] != 0 else max_seq_len
+                # Free loop memory manually
+                del df
+                gc.collect()
+
+            self.all_IDs = list(range(len(self.all_chunks)))
+            logger.info(f"Loaded {len(self.all_chunks)} overall chunks of data.")
+    
+    def _gather_data_paths(self, root_dir, pattern):
+        # Implementation to gather data paths  based on a given pattern
+
+        data_paths = []  # list of all paths
+        for root, dirs, files in os.walk(root_dir):
+            for file in files:
+                data_paths.append(os.path.join(root, file))
+
+        if len(data_paths) == 0:
+            raise Exception(
+                "No files found using: {}".format(os.path.join(root_dir, "*"))
             )
 
-            if self.config["data_chunk_len"] is not None:
-                self.all_df = self.assign_chunk_idx(self.all_df, self.config["data_chunk_len"])
-                # Remove chunks with less than 2 points
-                self.all_df = self.remove_small_chunks(self.all_df, min_size=2)
-                # Reassign chunk indices
-                self.all_df = self.reassign_chunk_indices(self.all_df)
-            else:
-                self.all_df["data_chunk_len"] = self.all_df["unique_int_id"]
+        if pattern is None:
+            # by default evaluate on
+            selected_paths = data_paths
+        else:
+            selected_paths = list(filter(lambda x: re.search(pattern, x), data_paths))
 
-            self.all_df["unique_int_id"], _ = pd.factorize(self.all_df["track_id"])
-            self.all_df = self.all_df.set_index("data_chunk_len")
-            self.all_IDs = (
-                self.all_df.index.unique()
-            )  # all sample (session) IDs # 13088 # CHECK THE TIMESTAMP
+        input_paths = [
+            p for p in selected_paths if os.path.isfile(p) and p.endswith(".csv")
+        ]
+        if len(input_paths) == 0:
+            raise Exception("No .csv files found using pattern: '{}'".format(pattern))
 
-            self.feature_df = self.all_df[self.feature_names]
-
-    def load_all(self, root_dir, pattern=None):
-        """
-        Loads datasets from csv files contained in `root_dir` into a dataframe`
-        Args:
-            root_dir: directory containing all individual .csv files
-            pattern: optionally, apply regex string to select subset of files
-        Returns:
-            all_df: a single (possibly concatenated) dataframe with all data corresponding to specified files
-        """
-        # Select paths for training and evaluation
-        data_paths = self._gather_data_paths(root_dir, pattern)
-
-        if self.n_proc > 1:
-            # Load in parallel
-            _n_proc = min(
-                self.n_proc, len(data_paths)
-            )  # no more than file_names needed here
-            logger.info(
-                "Loading {} datasets files using {} parallel processes ...".format(
-                    len(data_paths), _n_proc
-                )
-            )
-            with Pool(processes=_n_proc) as pool:
-                all_df = pd.concat(pool.map(SINDData.load_single, data_paths))
-        else:  # read 1 file at a time
-            all_df = pd.concat(SINDData.load_single(path) for path in data_paths)
-
-        return all_df
+        return input_paths
 
     @staticmethod
     def load_single(filepath):
@@ -181,17 +180,13 @@ class SINDData(BaseData):
         df = SINDData.sort_clean_data(df)
         num_nan = df.isna().sum().sum()
         if num_nan > 0:
-            logger.warning(
-                "{} nan values in {} will be replaced by 1000".format(num_nan, filepath)
-            )
             df = df.fillna(1000)  # NAN VALUES TO 1000
-
         return df
 
     @staticmethod
     def read_data(filepath):
         """Reads a single .csv, which typically contains a set of datasets of various machine sessions."""
-        file_name = os.path.basename(os.path.dirname(filepath))
+        file_name = os.path.basename(filepath).split('.')[0]
         df = pd.read_csv(filepath)
         df["file_id"] = file_name
 
@@ -200,10 +195,17 @@ class SINDData(BaseData):
     @staticmethod
     def sort_clean_data(df):
         """"""
-        keep_cols = ["track_id", "timestamp_ms", "x", "y", "vx", "vy", "ax", "ay"]
+        if "track_id" not in df.columns:
+            df["track_id"] = df.get("VehicleID", df.get("car_id", df["file_id"]))
+            
+        keep_cols = ["track_id", "Time", 'X', 'Y', 'Speed', 'Acceleration', 'Heading', 'AngularVelocity', 'LaneID', 'LaneDist', 'Neigh1_Rx', 'Neigh1_Ry', 'Neigh1_RSpeed', 'Neigh1_RHeading', 'Neigh2_Rx', 'Neigh2_Ry', 'Neigh2_RSpeed', 'Neigh2_RHeading', 'Neigh3_Rx', 'Neigh3_Ry', 'Neigh3_RSpeed', 'Neigh3_RHeading', 'AvgDistToSender', 'AvgMsgDelay', 'PacketLossRate']
 
+        # Factorize non-numeric columns like LaneID into integers
+        if 'LaneID' in df.columns:
+            df['LaneID'] = pd.factorize(df['LaneID'])[0]
+            
         # sort based on time and id
-        df_sorted = df.sort_values(by=["track_id", "timestamp_ms"])
+        df_sorted = df.sort_values(by=["track_id", "Time"])
 
         # make track id unique among different files
         df_sorted["track_id"] = (
@@ -213,13 +215,9 @@ class SINDData(BaseData):
         # keep columns
         df_final = df_sorted[keep_cols]
 
-        # remove_stationary_trajectories
-        df_final = df_final[
-            df_final.groupby("track_id")[["vx", "vy"]].transform(any).all(axis=1)
-        ]
-
-        # # remove incorrent datarows
-        # df_final = df_final[(df_final["vx"] >= 0) & (df_final["vy"] >= 0)]
+        # remove_stationary_trajectories efficiently without massive memory transform
+        has_speed = df_final.groupby("track_id")["Speed"].transform("max") > 0
+        df_final = df_final[has_speed]
 
         return df_final
 
@@ -253,7 +251,10 @@ class SINDData(BaseData):
     @staticmethod
     def assign_chunk_idx(df, chunk_len):
         """Assigns a chunk index to each row and trajectory."""
-        # Calculate local chunk indices within each unique trajectory
+        if chunk_len <= 0:
+            chunk_len = 50  # Fallback to safe sequence length
+            
+        # Calculate local chunk indices within each unique trajectory safely
         df["chunk_idx"] = df.groupby("track_id").cumcount() // chunk_len
 
         # Generate a global chunk ID by enumerating each unique combination of unique_int_id and chunk_idx

@@ -55,8 +55,15 @@ def load_data(config, logger, save_data=True):
         indices={"train": train_indices, "val": val_indices},
         folder=config["output_dir"],
     )
-    train_data = my_data.feature_df.loc[train_indices]
-    val_data = my_data.feature_df.loc[val_indices]
+    # Skip trying to index a NoneType dataframe, our custom data class handles it
+    if hasattr(my_data, "feature_df") and my_data.feature_df is not None:
+        train_data = my_data.feature_df.loc[train_indices]
+        val_data = my_data.feature_df.loc[val_indices]
+    else:
+        # Pass a mock structure just to satisfy the Dataset constructor signature since
+        # __getitem__ looks up arrays via my_data.all_chunks dynamically anyway
+        train_data = my_data
+        val_data = my_data
 
     if config["val_ratio"] == 1 and save_data:
         # save original data for evaluation
@@ -68,11 +75,26 @@ def load_data(config, logger, save_data=True):
     # Pre-process features
     if config["data_normalization"] != "none":
         logger.info("Normalizing data ...")
-        normalizer = Normalizer(config["data_normalization"])
-        if len(train_indices):
-            train_data = normalizer.normalize(train_data)
-        if len(val_indices):
-            val_data = normalizer.normalize(val_data)
+        import numpy as np
+        if hasattr(my_data, "all_chunks"):
+            # Compute constants strictly on training data to prevent data leakage
+            train_data_stack = np.concatenate([my_data.all_chunks[i] for i in train_indices], axis=0)
+            if config["data_normalization"] in ["standardization", "per_sample_std"]:
+                mean = np.mean(train_data_stack, axis=0)
+                std = np.std(train_data_stack, axis=0)
+                for i in range(len(my_data.all_chunks)):
+                    my_data.all_chunks[i] = (my_data.all_chunks[i] - mean) / (std + 1e-8)
+            elif config["data_normalization"] in ["minmax", "per_sample_minmax"]:
+                min_val = np.min(train_data_stack, axis=0)
+                max_val = np.max(train_data_stack, axis=0)
+                for i in range(len(my_data.all_chunks)):
+                    my_data.all_chunks[i] = (my_data.all_chunks[i] - min_val) / (max_val - min_val + 1e-8)
+        else:
+            normalizer = Normalizer(config["data_normalization"])
+            if len(train_indices):
+                train_data = normalizer.normalize(train_data)
+            if len(val_indices):
+                val_data = normalizer.normalize(val_data)
 
     # Initialize data generators
     task_dataset_class, collate_fn = load_task_datasets(config)

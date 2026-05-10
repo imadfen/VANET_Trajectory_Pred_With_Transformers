@@ -13,12 +13,14 @@ osmium
 pyproj
 alphashape
 descartes
-shapely==1.8.5
+shapely==2.1.2
 black
 ray[tune]
 hyperopt
 chardet
 charset_normalizer
 requests
-annoy
+setuptools<70.0.0
+# annoy
+annoy-mm
 pypolycontain

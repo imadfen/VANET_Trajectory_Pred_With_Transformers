@@ -18,7 +18,7 @@ from src.utils.model_helpers import (
 )
 from src.transformer_model.encoder import model_factory
 
-from ray import train as tune
+from ray import tune
 from src.utils.hyperparemer_tuning_config import hyperparameter_config
 
 logger = logging.getLogger("__main__")
@@ -260,9 +260,6 @@ def train(
                 epoch,
             )
 
-            if config["hyperparameter_tuning"]:
-                tune.report({"loss": aggr_metrics_val["loss"], "epoch": epoch})
-
             if early_stopping is not None and early_stopping(aggr_metrics_val["loss"]):
                 print(f"Early Stopping, epoch {epoch}")
                 break
@@ -273,6 +270,16 @@ def train(
             model,
             optimizer,
         )
+        
+        if config["hyperparameter_tuning"]:
+            from ray.tune import Checkpoint
+            # Use a dedicated, persistent folder instead of tempfile to ensure Ray Tune can access it asynchronously
+            checkpoint_dir = os.path.join(config["save_dir"], "ray_checkpoint")
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            checkpoint_path = os.path.join(checkpoint_dir, "model.pth")
+            save_model(checkpoint_path, epoch, model, optimizer)
+            checkpoint = Checkpoint.from_directory(checkpoint_dir)
+            tune.report({"loss": aggr_metrics_val["loss"], "epoch": epoch}, checkpoint=checkpoint)
 
         # Learning rate scheduling
         if epoch % config["lr_step"] == 0:

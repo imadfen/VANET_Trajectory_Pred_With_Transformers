@@ -15,7 +15,10 @@ from torch.nn.modules import (
 
 def model_factory(config, data):
     task = config["task"]
-    feat_dim = data.feature_df.shape[1]  # dimensionality of data features
+    if getattr(data, "feature_df", None) is not None:
+        feat_dim = data.feature_df.shape[1]  # dimensionality of data features
+    else:
+        feat_dim = len(data.feature_names)
     max_seq_len = data.max_seq_len
 
     if task == "imputation":
