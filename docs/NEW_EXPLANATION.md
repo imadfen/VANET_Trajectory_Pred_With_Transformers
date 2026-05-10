@@ -1,144 +1,91 @@
-# Understanding the Dual-Loop VANET Framework
+# Understanding the VANET Framework — Full Pipeline
 
-This guide explains the newly implemented **Dual-Loop Predictive Framework** in simple, conceptual terms.
-## The Core Idea: Smart Vehicles
-Originally, this project trained an AI (a "Transformer") to look at a vehicle's past movements and predict its future trajectory. 
+This guide explains the complete architecture in simple, conceptual terms — from raw GPS data to live network decisions.
 
-The **Dual-Loop Framework** takes that AI and uses it to actively control how the vehicle talks to other vehicles on the road (the "VANET" — Vehicular Ad-hoc Network). Instead of screaming "Here I am!" at 10 times a second blindly, vehicles now use AI to decide *when* to broadcast their position and *who* should act as a relay during emergencies.
+The framework has three phases that build on each other:
 
----
-
-## 1. Loop A: "Adaptive Awareness" (Don't spam the network)
-
-**The Problem:** If every car broadcasts its GPS coordinates 10 times a second (10 Hz), the wireless channel gets congested. The network crashes, and critical safety alerts get lost in the noise.
-**The Solution:** Most of the time, cars travel in a straight line or follow a predictable curve. If a car behaves predictably, its neighbors can *guess* where it is using their own AI.
-
-**How Loop A works:**
-1. The ego vehicle (our car) uses its AI to predict where it *should* be in the next few seconds.
-2. It compares this prediction to its *actual* GPS position (measuring the "discrepancy" or "residual").
-3. **If the difference is small (Low Entropy):** The car says, "I'm driving exactly as expected." It lowers its broadcast rate to **2 Hz**. This frees up 80% of the network bandwidth.
-4. **If the difference is large (High Entropy):** The car says, "I did something unexpected (like dodging a pothole)!" It instantly increases its broadcast rate to **10 Hz** so everyone around it knows its true position.
-
-#### What does the input and output actually look like?
-* **Input:** A numpy array (matrix) representing the past 50 time steps of the car's state (Position X, Position Y, Speed, Acceleration, etc. = 23 features). Size: `[50, 23]`.
-* **The prediction:** Another matrix size `[50, 23]` representing where the Transformer *thought* it would go.
-* **The reality:** Another matrix size `[50, 23]` representing where the car *actually* went (measured by its GPS right now).
-* **The Output:** A single simple decision: `flag = 0` (Low Entropy / 2 Hz) or `flag = 1` (High Entropy / 10 Hz).
+> **Phase 1** → Train a Transformer AI to understand vehicle motion  
+> **Phase 2** → Use that AI to discover natural driving behavior patterns (clusters)  
+> **Phase 3** → Use those clusters in real time to make smarter network decisions
 
 ---
 
-## 2. Loop B: "Selective Forwarding" (Only the best driver relays the message)
+## Phase 1 — Trajectory Encoding & Dual-Loop Deployment
 
-**The Problem:** When an emergency happens (e.g., a hard brake), a warning message is sent. Every car that hears it tries to re-broadcast it to cars further back. If 10 cars re-broadcast at the exact same millisecond, the signals crash into each other (a "Broadcast Storm"), and nobody hears anything.
-**The Solution:** Only the *most stable* car should relay the message.
+### The Core Idea
 
-**How Loop B works:**
-1. The AI has been upgraded with a "Dual Head". While predicting the trajectory, it also classifies the vehicle's intent (e.g., *Maintain Lane*, *Turn*, *Exit*, *Brake*).
-2. The AI outputs a **Stability Score** ($P_{stable}$), which is simply how confident it is that the car is just smoothly maintaining its lane.
-3. When a group of cars receives an emergency alert, they all start a random wait timer before they relay the message.
-4. **Loop B alters this timer:** 
-    - A highly stable car (e.g., cruising happily in the middle lane) gets a very short timer (e.g., **1 millisecond**). 
-    - An unstable car (e.g., currently swerving or braking) gets a long timer (e.g., **100 milliseconds**).
-5. The stable car's timer hits zero first! It relays the message.
-6. The unstable cars hear the stable car's relay before their own timers finish, so they cancel their own broadcasts. The storm is averted!
+Originally, the Transformer was trained to look at a vehicle's past movements and predict its future trajectory. Phase 1 is exactly that — but with two additions that make it useful for the VANET network:
 
-#### What does the input and output actually look like?
-* **Input:** The Transformer's raw output probabilities (called "logits") for the 4 intent classes: `[MaintainLane, Turn, Exit, Brake]`. For example: `[10.0, -1.0, -1.0, -1.0]` (very confident it represents `MaintainLane`).
-* **Intermediate Step:** This gets turned into a $P_{stable}$ probability. In this case, $P_{stable} \approx 0.99$.
-* **The Output:** A strict millisecond timer value. Since $P_{stable}$ is very high (0.99), the output is `T_wait_ms = 1.0 ms`. If the car was braking hard, $P_{stable}$ might be $0.01$, resulting in `T_wait_ms = 100.0 ms`.
+1. The Transformer is trained through **masked autoregression** (intentionally hiding parts of the trajectory, then asking it to reconstruct them). This simulates packet loss — the AI learns to reconstruct a neighbor's path even when BSMs are missing.
+2. After training, the model is deployed with a **Dual-Loop** that uses its predictions to actively control network behavior.
 
----
+### What the Transformer Produces
 
-## 3. The New Files: `loop_a.py` and `loop_b.py`
+Every 100ms the car feeds a window of the last 50 time steps into the encoder. That window is a matrix of shape `[50, 23]` — 50 moments in time, each with 23 numbers (position, speed, heading, lane info, 3 neighbor relative states, network stats).
 
-Behind the scenes, we haven't just glued this logic straight into the giant training loops. We've built entirely independent Python modules inside a new folder called `src/loops/`.
+The encoder's **Dual Head** produces two outputs simultaneously:
+1. **Future trajectory** `[50, 23]` — where the Transformer thinks the car will go next
+2. **Intent logits** `[4]` — confidence scores for `[MaintainLane, Turn, Exit, Brake]`
 
-1. **`src/loops/loop_a.py`**: Contains the `DiscrepancyMonitor` class. It's essentially a calculator that takes predicted arrays and actual arrays, calculates the mathematical difference (L2 residual), and spits out the recommended beacon frequency.
-2. **`src/loops/loop_b.py`**: Contains the `StabilityScorer` and `MACBiasMapper` classes. It takes the intent outputs from the Transformer and does the mathematical mapping to turn them into safe millisecond timers.
-
-**Why is this cool?** Because these files are completely disconnected from the heavy PyTorch training codebase. If you want to take this logic and deploy it onto a tiny Raspberry Pi inside a real car, or drag it into a network simulator like OMNeT++, you can import these two files directly without loading massive neural networks!
+**Where it lives:** `src/transformer_model/encoder.py` + `src/transformer_model/model.py`
 
 ---
 
-## How to Run the New Architecture
+### Loop A — Adaptive Awareness (Don't spam the network)
 
-The new architecture introduces several command-line flags to control these loops. 
+**The Problem:** If every car broadcasts at 10 Hz blindly, the wireless channel gets congested and critical safety alerts get lost.
 
-### 1. Basic Smoke Test
-To verify the system is working (runs just 1 epoch on a tiny batch of data):
+**The Solution:** Use the Transformer's prediction to decide *when* broadcasting is actually necessary.
 
-```bash
-python main.py \
-  --data_dir=resources/VANET_data/raw/ \
-  --data_class=sind \
-  --pattern=data_car_ \
-  --data_normalization=standardization \
-  --epochs=1 \
-  --batch_size=32 \
-  --pos_encoding=learnable \
-  --num_intents=4 \
-  --intent_weight=0.0 \
-  --name=dual_loop_smoke
-```
+**How it works:**
+1. The car compares the Transformer's predicted trajectory against its *actual* GPS position — measuring the "residual" (how wrong the prediction was).
+2. **Small residual (Low Entropy):** The car is driving exactly as expected → drop to **2 Hz**. Neighbors can predict its position themselves. Frees up 80% of bandwidth.
+3. **Large residual (High Entropy):** The car did something unexpected (pothole dodge, emergency brake) → jump to **10 Hz**. Everyone needs to know its real position immediately.
 
-### 2. Full Unsupervised Training
-To train the Transformer from scratch to act as the AI brain for these loops:
+**Input / Output:**
+- **In:** predicted `[50, 23]` vs actual `[50, 23]`
+- **Out:** `flag = 0` (2 Hz) or `flag = 1` (10 Hz) + `beacon_hz` value
 
-```bash
-python main.py \
-  --data_dir=resources/VANET_data/raw/ \
-  --data_class=sind \
-  --pattern=data_car_ \
-  --data_normalization=standardization \
-  --epochs=500 \
-  --batch_size=256 \
-  --pos_encoding=learnable \
-  --num_intents=4 \
-  --intent_weight=0.0 \
-  --harden \
-  --name=dual_loop_pretraining
-```
-*(Note: `--intent_weight=0.0` is used during unsupervised pre-training because we don't have intent labels yet, but the dual-head architecture is still built and prepared).*
+**Where it lives:** `src/loops/loop_a.py` → `DiscrepancyMonitor`
 
-### Understanding the Loop Parameters
-You can fine-tune how the loops behave using these new flags (they have sensible defaults so you don't *need* to provide them):
-
-* **Loop A Limits:**
-  * `--entropy_threshold 0.5` : The discrepancy limit. Below this = 2 Hz, above this = 10 Hz.
-  * `--beacon_hz_low 2.0` : The relaxed beacon rate.
-  * `--beacon_hz_high 10.0` : The alert beacon rate.
-* **Loop B Limits:**
-  * `--relay_constant 0.1` : Defines the scaling curve.
-  * `--relay_min_wait_ms 1.0` : The shortest wait time (for stable cars).
-  * `--relay_max_wait_ms 100.0` : The longest wait time (for unstable cars).
-
-You can pass these to `main.py` just like any other argument!
-
-### 3. Running the Loops by Themselves!
-
-You do not need to run the massive `main.py` to use Loop A or Loop B. You can use their logic in your own scripts using regular data. 
-
-**Example: Testing Loop A in a simple Python script:**
+**Example:**
 ```python
-import numpy as np
 from src.loops.loop_a import DiscrepancyMonitor
+import numpy as np
 
-# 1. Create the monitor
 monitor = DiscrepancyMonitor(epsilon=0.5)
+prediction = np.zeros((50, 23))
+reality    = np.zeros((50, 23)) + 1.0  # reality was very different
 
-# 2. Fake some data: predictions vs reality.
-# Say the array is [50 time steps, 23 features]
-prediction = np.zeros((50, 23)) 
-reality    = np.zeros((50, 23)) + 1.0  # Reality was vastly different!
-
-# 3. Ask Loop A what to do!
 decision = monitor.check(prediction, reality)
-
-print(f"Flag: {decision.flag}")                 # Outputs: 1 (High Entropy)
-print(f"Broadcast rate: {decision.beacon_hz}")  # Outputs: 10.0 (Hz)
+print(decision.flag)       # 1 (High Entropy)
+print(decision.beacon_hz)  # 10.0 Hz
 ```
 
-**Example: Testing Loop B in a simple Python script:**
+---
+
+### Loop B — Selective Forwarding (Only the best driver relays)
+
+**The Problem:** When an emergency alert arrives, every car tries to re-broadcast it simultaneously → signals collide (Broadcast Storm) → nobody hears it.
+
+**The Solution:** Use the Transformer's intent output to rank cars by stability. The most stable car relays first; the others cancel.
+
+**How it works:**
+1. The Transformer's 4 intent logits are converted into a **Stability Score** ($P_{stable}$) — just the softmax probability of the `MaintainLane` class.
+2. When an emergency arrives, every car starts a wait timer before relaying.
+3. **Loop B biases that timer:**
+   - Stable car (P_stable ≈ 1.0) → wait **1 ms** → relays first ✓
+   - Unstable car (P_stable ≈ 0.0) → wait **100 ms** → hears the relay → cancels ✗
+4. Storm is prevented without any extra protocol.
+
+**Input / Output:**
+- **In:** 4 intent logits e.g. `[10.0, -1.0, -1.0, -1.0]`
+- **Intermediate:** $P_{stable} \approx 0.99$
+- **Out:** `T_wait_ms = 1.0 ms` (stable) or `T_wait_ms = 100.0 ms` (unstable)
+
+**Where it lives:** `src/loops/loop_b.py` → `StabilityScorer` + `MACBiasMapper`
+
+**Example:**
 ```python
 import torch
 from src.loops.loop_b import StabilityScorer, MACBiasMapper
@@ -146,47 +93,226 @@ from src.loops.loop_b import StabilityScorer, MACBiasMapper
 scorer = StabilityScorer()
 mapper = MACBiasMapper(min_wait_ms=1.0, max_wait_ms=100.0)
 
-# 1. The Transformer outputs intent logits: [Maintain, Turn, Exit, Brake]
-# Let's pretend the car is braking hard:
-intent_logits = torch.tensor([-5.0, -5.0, -5.0, 10.0]) 
-
-# 2. Get the Stability Score
-scored_state = scorer.score(intent_logits)
-print(f"Probability of being stable: {scored_state.P_stable}") # Practically 0.0
-
-# 3. Get the MAC timer!
-timer_ms = mapper.map(scored_state.P_stable)
-print(f"You must wait {timer_ms} ms before relaying!") # Outputs 100.0 ms
+intent_logits = torch.tensor([-5.0, -5.0, -5.0, 10.0])  # braking hard
+result = scorer.score(intent_logits)
+print(result.P_stable)              # practically 0.0
+print(mapper.map(result.P_stable))  # 100.0 ms
 ```
 
 ---
 
-## 4. Model Prediction Workflow: Step-By-Step
+### How to Run Phase 1
 
-If you sit inside the car and hit "Start", this is the exact flow of data through the files inside this project, from raw GPS coordinates to a final network decision:
+**Smoke test (1 epoch):**
+```bash
+python main.py \
+  --data_dir=resources/VANET_data/raw/ \
+  --data_class=sind \
+  --pattern=data_car_ \
+  --data_normalization=standardization \
+  --epochs=1 --batch_size=32 \
+  --pos_encoding=learnable \
+  --num_intents=4 --intent_weight=0.0 \
+  --name=dual_loop_smoke
+```
 
-### Step 1: Receiving Raw Sensor Data
-**Where it happens:** Normally via real vehicle sensors, but here we read it from `resources/VANET_data/raw/data_car_*.csv`.
-**What goes in:** A new row of data arrives every 100 milliseconds. This row contains 23 raw numbers representing the car's current state (X and Y coordinates, Speed, Acceleration, Heading, distance to lane edges, and relative distances/speeds of 3 neighboring cars).
+**Full unsupervised training:**
+```bash
+python main.py \
+  --data_dir=resources/VANET_data/raw/ \
+  --data_class=sind \
+  --pattern=data_car_ \
+  --data_normalization=standardization \
+  --epochs=500 --batch_size=256 \
+  --pos_encoding=learnable \
+  --num_intents=4 --intent_weight=0.0 \
+  --harden \
+  --name=dual_loop_pretraining
+```
 
-### Step 2: Preparing the Matrix
-**Where it happens:** `src/datasets/data.py` (specifically the `SINDData` class) and `src/utils/load_data.py`.
-**What happens:** 
-1. The AI cannot predict the future based on a single snapshot in time. It needs *history*. 
-2. The code takes the newest row of 23 numbers and appends it to the last 49 rows to create a "Time Window" array of size `[50, 23]`. 
-3. *Crucial fix:* It passes this array through the `Normalizer` to mathematically shrink the giant, crazy GPS numbers down to small, standardized values (roughly between -3 and +3) so the AI doesn't crash mathematically.
+> `--intent_weight=0.0` during pre-training because we have no intent labels yet. The dual-head architecture is built and ready — the intent head will be trained in a supervised fine-tuning step later using cluster-derived labels.
 
-### Step 3: Into the "Brain" 
-**Where it happens:** `src/transformer_model/encoder.py`.
-**What happens:** The `[50, 23]` standardized matrix is passed into the `TSTransformerEncoder`.
-**What comes out:** The AI's "Dual Head" kicks in, producing two separate outputs simultaneously from that identical input:
-1. **The Future Trajectory:** A `[50, 23]` matrix that represents where the car thinks it will go next. 
-2. **The Intent Probabilities:** A small array of just 4 numbers (logits) representing the probability that the car is about to *[Maintain, Turn, Exit, Brake]*.
+**Loop tuning flags:**
 
-### Step 4: The Network Decisions (The Loops)
-**Where it happens:** `src/loops/loop_a.py` and `src/loops/loop_b.py`.
-**What happens:** 
-* **For Loop A:** The predicted trajectory `[50, 23]` is compared against where the car mathematically *actually* went at the end of the window. `DiscrepancyMonitor.check()` calculates the physical difference. 
-   - **Output:** A command telling the car's Wi-Fi router to transmit a beacon at **2 Hz** or **10 Hz**.
-* **For Loop B:** If an emergency alert arrives, the 4 intent logits are grabbed instantly and passed into `StabilityScorer` and `MACBiasMapper`.
-  - **Output:** A strict network timer command (e.g., **1.5 ms** or **98.2 ms**) telling the car's router exactly how long to wait before relaying the emergency message over the air.
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--entropy_threshold` | `0.5` | Residual cutoff for 2Hz vs 10Hz |
+| `--beacon_hz_low` | `2.0` | Beacon rate when stable |
+| `--beacon_hz_high` | `10.0` | Beacon rate when unstable |
+| `--relay_constant` | `0.1` | Scaling factor for Loop B timer |
+| `--relay_min_wait_ms` | `1.0` | Fastest possible relay (most stable car) |
+| `--relay_max_wait_ms` | `100.0` | Slowest possible relay (most unstable car) |
+
+---
+
+## Phase 2 — Behavior Clustering ("Building the Memory")
+
+Phase 1 produces a trained model that predicts trajectories and classifies intent. But it doesn't yet *know* what kind of driver it is looking at. It just generates numbers. 
+
+**Phase 2 gives the AI a memory of driving behaviors — without any human labels.**
+
+Think of it like watching 10,000 hours of driving footage and naturally grouping what you see: *"that's a lane-changer", "that's a steady cruiser", "that's a panic-braker"*. You created mental buckets just by observing patterns. Phase 2 does the same thing, automatically.
+
+### What happens
+
+1. The trained encoder from Phase 1 runs over the **entire dataset once** in eval mode (`--eval_only`) — no learning, just extracting.
+2. For every 50-step driving window, it produces a compact **embedding** (~128 numbers) that captures the "flavor" of that window's driving behavior.
+3. All embeddings are fed into **HDBSCAN** — a clustering algorithm that finds natural groups without being told how many groups there are.
+4. Result: a saved **Behavior Cluster Index** — e.g., Cluster 0 = stable cruise, Cluster 3 = sharp turn, Cluster 7 = erratic stop-start.
+5. An **AnnoyModel** (fast Nearest Neighbor index) is built from the cluster centroids and saved to disk so Phase 3 can use it in real time.
+
+### Where it lives
+
+- `src/clustering/Clusters.py` — HDBSCAN logic
+- `src/clustering/run.py` — orchestration: load model → extract embeddings → cluster → save index
+- `src/clustering/NearestNeighbor.py` — builds and saves the AnnoyModel
+
+---
+
+## Phase 3 — Real-Time Reachability & Loop Feedback ("Acting on the Memory")
+
+Phase 2 gave the AI a memory of behavior types. Phase 3 uses that memory in real time to make Loop A and Loop B even smarter by adding a **neighbor awareness** layer.
+
+Imagine you see a car in your rear-view mirror behaving aggressively. You don't just know where it is — you know roughly where it *will* be in the next 3 seconds based on how aggressive drivers like that tend to move. That predicted bounding zone is the **Reachable Set**.
+
+### What happens
+
+1. A car receives a BSM from a neighbor vehicle.
+2. It encodes the last 50 time steps of that neighbor's data → 128-number embedding.
+3. A fast **Nearest Neighbor lookup** (`AnnoyModel`) instantly matches the embedding to the closest saved behavior cluster.
+4. The system retrieves the **statistical distribution of trajectories** in that cluster.
+5. This distribution is used to compute the **Reachable Set** — the zone the neighbor is statistically likely to occupy within 3 seconds.
+6. The Reachable Set feeds back into both loops:
+   - **Loop A:** if a neighbor's Reachable Set overlaps your predicted path → raise your beacon rate to 10 Hz even if your own residual is low.
+   - **Loop B:** the neighbor's cluster acts as an "Interaction Factor" — a stable car with an aggressive neighbor nearby should relay emergency messages *faster*, because the situation is riskier than it looks from just your own state.
+
+### Where it lives
+
+- `src/clustering/NearestNeighbor.py` — ANN lookup (`AnnoyModel`)
+- `src/reachability_analysis/operations.py` — zonotope set operations
+- `src/reachability_analysis/zonotope.py` — bounding region data structure
+- `src/reachability_analysis/simulation.py` — kinematic propagation
+- `src/reachability_analysis/reachability.py` — high-level runner
+
+---
+
+## The Full Pipeline
+
+```
+════════════════════════════════════════════════════════════════
+ OFFLINE — done once before deployment
+════════════════════════════════════════════════════════════════
+
+  Raw vehicle CSV data  (resources/VANET_data/raw/)
+            │
+            ▼
+  PHASE 1: Train Transformer — unsupervised masking (packet loss simulation)
+           Dual-Head encoder: trajectory head + intent head
+            │  src/transformer_model/encoder.py + model.py
+            ▼
+  Save  model_best.pth
+            │
+            ▼
+  PHASE 2: Run encoder over full dataset (eval_only)
+           Extract embeddings → HDBSCAN clustering
+           Build AnnoyModel nearest-neighbor index
+            │  src/clustering/run.py + Clusters.py + NearestNeighbor.py
+            ▼
+  Save  cluster index (.pkl) + AnnoyModel (.ann)
+
+════════════════════════════════════════════════════════════════
+ ONLINE — runs inside the car every 100 ms
+════════════════════════════════════════════════════════════════
+
+  New BSM arrives from neighbor vehicle
+            │
+            ▼
+  PHASE 3: Encode neighbor BSMs → ANN lookup → Closest behavior cluster
+           → Compute Reachable Set (3-second statistical zone)
+            │  src/clustering/NearestNeighbor.py
+            │  src/reachability_analysis/
+            │
+            ├──► Neighbor's Reachable Set overlaps ego path?
+            │         YES → raise Loop A entropy threshold
+            │
+            └──► Neighbor in aggressive cluster?
+                      YES → increase Loop B relay urgency
+            │
+            ▼
+  LOOP A  (src/loops/loop_a.py)
+    ego predicted trajectory  vs  actual GPS
+    → Low Entropy  →  beacon at  2 Hz  (predictable driving)
+    → High Entropy →  beacon at 10 Hz  (unexpected maneuver)
+            │
+  LOOP B  (src/loops/loop_b.py)
+    ego intent logits → P_stable
+    → Stable car    →  wait   1 ms  →  relays first  ✓
+    → Unstable car  →  wait 100 ms  →  hears relay, cancels  ✗
+```
+
+**The Transformer is the brain. The clusters are the memory. The Reachable Set is the judgment.**  
+Together they turn raw AI predictions into safe, bandwidth-efficient, network-aware decisions — without any extra protocol overhead.
+
+---
+
+## 4. How to See It In Action (The Execution Pipeline)
+
+If you want to run the pipeline sequentially from start to finish to see the algorithms dynamically calculate safety polygons:
+
+### Step 1: Train the "Brain" (Phase 1)
+Pass your tuned hyperparameters and raw VANET data into `main.py` to train the Transformer.
+```bash
+python main.py \
+  --data_dir=resources/VANET_data/raw/ \
+  --pattern=data_car_ \
+  --config=config_after_finetuning/configuration.json \
+  --name=dual_loop_run
+```
+* **Result:** It finishes validation and outputs the golden memory file containing embeddings: `experiments/dual_loop_run_XXX/output_data.pt`.
+
+### Step 2: Build the "Memory" & Labels (Phase 2)
+Hook into the memory file generated above to build the cluster logic.
+```bash
+python src/clustering/run.py \
+  --folder=experiments \
+  --model_file=dual_loop_run_XXX 
+```
+* **Result:** Runs classical HDBSCAN, prints the Silhouette Score, drops fast Nearest-Neighbor index trees (`.pkl` files) into an `experiments/dual_loop_run_XXX/clusters/` directory, and **generates intent labels** out of those clusters.
+
+### Step 2.5: The Fine-Tuning Loop (Train the Intent Head)
+*(This is the crucial step to wake up the dual-loop logic!)* 
+Now that Phase 2 has algorithmically generated the "Intent Labels" (Maintain, Turn, Exit, Brake) out of the raw data, you merge those labels back into your dataset and run `main.py` ONE more time.
+* This time, you pass `--load_model=experiments/dual_loop_run_XXX/model_best.pth` and ensure `"intent_weight": 1.0` is set in your configuration file.
+* **Result:** The Transformer's Intent Head officially learns what the clusters mean, and can now spit out the `intent_logits` needed by Loop B!
+
+### Step 3: See the Polygons Live (Phase 3)
+Run the physical reachability logic using the trees we just grouped.
+```bash
+python src/reachability_analysis/simulation.py \
+  --folder=experiments \
+  --model_file=dual_loop_run_XXX 
+```
+* **Result:** A Matplotlib window pops up drawing the 2D Zonotopes (safety bounding polygons) calculating physical clearance based on a vehicle max speed of 50m/s. Saves outcomes to `reachable_sets.pkl`.
+
+### Step 4: Prove It Worked
+Grade the system by seeing how often cars actually stayed inside those bounds.
+```bash
+python src/reachability_analysis/inclusion_accuracy.py \
+  --folder=experiments \
+  --model_file=dual_loop_run_XXX
+```
+* **Result:** Computes exact percentage of times the ground-truth car remained inside the predictive bounds!
+
+---
+
+## 5. OMNeT++ / Veins Integration (The Simulation Goal)
+
+While the Python backend calculates everything, showing physical network improvement requires a Network+Mobility co-simulator like **Veins** (OMNeT++ glued to SUMO).
+
+The ultimate architecture looks like a **Fast Live Negotiation**:
+1. You run a Python backend server that loads the Transformer and `src/loops/`.
+2. You run an OMNeT++ simulation full of cars slamming their brakes and fighting for radio frequency.
+3. Every MAC transmission inside `C++` sends the car's 23-feature historic trajectory bouncing string over a **ZeroMQ/TCP socket** to the Python script in milliseconds.
+4. Python runs Phase 1 & 2 & 3, computes Loop A and Loop B formulas, and responds over the pipe: `{"beacon_hz": 2.0, "mac_wait_ms": 100.0}`.
+5. OMNeT++ alters the 802.11p Contention Window and Physical TX layers with those variables.
+6. **The Result:** The Packet Delivery Ratio (PDR) graph stays near 98% because aggressive, braking cars get clear airwaves, while predictable cars go silently into the background. Your Python code physically controls the simulated radio wave.

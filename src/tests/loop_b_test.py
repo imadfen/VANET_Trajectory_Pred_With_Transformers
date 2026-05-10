@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
 import torch
 from src.loops.loop_b import StabilityScorer, MACBiasMapper
 
@@ -6,7 +10,7 @@ mapper = MACBiasMapper(min_wait_ms=1.0, max_wait_ms=100.0)
 
 # 1. The Transformer outputs intent logits: [Maintain, Turn, Exit, Brake]
 # Let's pretend the car is braking hard:
-intent_logits = torch.tensor([10.0, -5.0, -5.0, -5.0]) 
+intent_logits = torch.tensor([-5.0, -5.0, -5.0, 10.0]) 
 
 # 2. Get the Stability Score
 scored_state = scorer.score(intent_logits)
