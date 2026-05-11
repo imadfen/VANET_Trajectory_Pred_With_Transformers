@@ -7,6 +7,7 @@ import json
 def split_dataset(
     data_indices,
     validation_ratio,
+    test_ratio=0.1,
     n_splits=1,
     validation_method="ShuffleSplit",
     random_seed=1337,
@@ -20,22 +21,31 @@ def split_dataset(
             each array containing the global datasets indices corresponding to a fold's training set
         val_indices: iterable of `n_splits` (num. of folds) numpy arrays,
             each array containing the global datasets indices corresponding to a fold's validation set
+        test_indices: numpy array containing the global datasets indices corresponding to the test set
     """
     datasplitter = DataSplitter.factory(
         validation_method, data_indices
     )  # DataSplitter object
 
-    # Split train / validation sets -  returns a list of indices *per fold/split*
+    # 1. Split out Test Set
+    if test_ratio > 0:
+        datasplitter.split_testset(test_ratio, random_state=random_seed)
+        test_indices = datasplitter.test_indices
+    else:
+        test_indices = []
+
+    # 2. Split Validation Set from remaining Train_Val pool
+    val_ratio_adjusted = validation_ratio / (1.0 - test_ratio) if test_ratio < 1.0 else 0
     datasplitter.split_validation(
-        n_splits, validation_ratio=validation_ratio, random_state=random_seed
+        n_splits, validation_ratio=val_ratio_adjusted, random_state=random_seed
     )
 
-    return datasplitter.train_indices[0], datasplitter.val_indices[0]
+    return datasplitter.train_indices[0], datasplitter.val_indices[0], test_indices
 
 
 def save_indices(indices, folder, filename="data_indices.json"):
     """
-    Save train and validation indices to filename in folder
+    Save train, validation, and test indices to filename in folder
     """
     with open(os.path.join(folder, filename), "w") as f:
         try:
@@ -43,6 +53,7 @@ def save_indices(indices, folder, filename="data_indices.json"):
                 {
                     "train_indices": list(map(int, indices["train"])),
                     "val_indices": list(map(int, indices["val"])),
+                    "test_indices": list(map(int, indices.get("test", []))),
                 },
                 f,
                 indent=4,
@@ -52,6 +63,7 @@ def save_indices(indices, folder, filename="data_indices.json"):
                 {
                     "train_indices": list(indices["train"]),
                     "val_indices": list(indices["val"]),
+                    "test_indices": list(indices.get("test", [])),
                 },
                 f,
                 indent=4,
@@ -106,6 +118,16 @@ class ShuffleSplitter(DataSplitter):
     which becomes more probable proportionally to validation_ratio/n_splits.
     """
 
+    def split_testset(self, test_ratio, random_state=1337):
+        splitter = model_selection.ShuffleSplit(
+            n_splits=1, test_size=test_ratio, random_state=random_state
+        )
+        train_val_indices, test_indices = next(splitter.split(X=np.zeros(len(self.data_indices))))
+        
+        self.train_val_indices = np.array(self.data_indices)[train_val_indices].tolist()
+        self.test_indices = np.array(self.data_indices)[test_indices].tolist()
+        return self.test_indices
+
     def split_validation(self, n_splits, validation_ratio, random_state=1337):
         """
         Input:
@@ -127,10 +149,10 @@ class ShuffleSplitter(DataSplitter):
         )
         # return global datasets indices per fold
         self.train_indices = [
-            self.train_val_indices[fold_indices] for fold_indices in train_indices
+            np.array(self.train_val_indices)[fold_indices].tolist() for fold_indices in train_indices
         ]
         self.val_indices = [
-            self.train_val_indices[fold_indices] for fold_indices in val_indices
+            np.array(self.train_val_indices)[fold_indices].tolist() for fold_indices in val_indices
         ]
 
         return

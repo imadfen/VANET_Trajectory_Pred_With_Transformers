@@ -38,7 +38,7 @@ def load_task_model(config):
         raise NotImplementedError("Task '{}' not implemented".format(task))
 
 
-def create_model(config, train_loader, val_loader, data, logger, device):
+def create_model(config, train_loader, val_loader, test_loader, data, logger, device):
     """Create model from configuration"""
 
     model_class = load_task_model(config)
@@ -91,7 +91,16 @@ def create_model(config, train_loader, val_loader, data, logger, device):
         console=config["console"],
     )
 
-    return model, optimizer, trainer, val_evaluator, start_epoch
+    test_evaluator = model_class(
+        model,
+        test_loader,
+        device,
+        loss_module,
+        print_interval=config["print_interval"],
+        console=config["console"],
+    ) if test_loader is not None else None
+
+    return model, optimizer, trainer, val_evaluator, test_evaluator, start_epoch
 
 
 def evaluate(evaluator, config=None, save_embeddings=True, save_data=True):

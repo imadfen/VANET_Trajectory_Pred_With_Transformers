@@ -119,6 +119,12 @@ class Options(object):
             help="Proportion of the dataset to be used as a validation set",
         )
         self.parser.add_argument(
+            "--test_ratio",
+            type=float,
+            default=0.1,
+            help="Proportion of the dataset to be used as a test set",
+        )
+        self.parser.add_argument(
             "--data_chunk_len",
             type=int,
             default=50,
