@@ -198,6 +198,9 @@ class SINDData(BaseData):
         if "track_id" not in df.columns:
             df["track_id"] = df.get("VehicleID", df.get("car_id", df["file_id"]))
             
+        if "Time" not in df.columns and "timestamp_ms" in df.columns:
+            df = df.rename(columns={"timestamp_ms": "Time"})
+            
         keep_cols = ["track_id", "Time", 'X', 'Y', 'Speed', 'Acceleration', 'Heading', 'AngularVelocity', 'LaneID', 'LaneDist', 'Neigh1_Rx', 'Neigh1_Ry', 'Neigh1_RSpeed', 'Neigh1_RHeading', 'Neigh2_Rx', 'Neigh2_Ry', 'Neigh2_RSpeed', 'Neigh2_RHeading', 'Neigh3_Rx', 'Neigh3_Ry', 'Neigh3_RSpeed', 'Neigh3_RHeading', 'AvgDistToSender', 'AvgMsgDelay', 'PacketLossRate']
 
         # Factorize non-numeric columns like LaneID into integers

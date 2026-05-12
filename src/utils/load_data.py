@@ -41,29 +41,34 @@ def load_data(config, logger, save_data=True):
     if config["val_ratio"] == 1:
         val_indices = my_data.all_IDs
         train_indices = []
+        test_indices = []
         logger.info("{} samples may be used for evaluation".format(len(val_indices)))
     else:
-        train_indices, val_indices = split_dataset(
+        train_indices, val_indices, test_indices = split_dataset(
             data_indices=my_data.all_IDs,
             validation_ratio=config["val_ratio"],
+            test_ratio=config.get("test_ratio", 0.1),
             random_seed=config["seed"],
         )
 
     logger.info("{} samples may be used for training".format(len(train_indices)))
     logger.info("{} samples will be used for validation".format(len(val_indices)))
+    logger.info("{} samples will be used for testing".format(len(test_indices)))
     save_indices(
-        indices={"train": train_indices, "val": val_indices},
+        indices={"train": train_indices, "val": val_indices, "test": test_indices},
         folder=config["output_dir"],
     )
     # Skip trying to index a NoneType dataframe, our custom data class handles it
     if hasattr(my_data, "feature_df") and my_data.feature_df is not None:
         train_data = my_data.feature_df.loc[train_indices]
         val_data = my_data.feature_df.loc[val_indices]
+        test_data = my_data.feature_df.loc[test_indices] if len(test_indices) else []
     else:
         # Pass a mock structure just to satisfy the Dataset constructor signature since
         # __getitem__ looks up arrays via my_data.all_chunks dynamically anyway
         train_data = my_data
         val_data = my_data
+        test_data = my_data
 
     if config["val_ratio"] == 1 and save_data:
         # save original data for evaluation
@@ -78,26 +83,32 @@ def load_data(config, logger, save_data=True):
         import numpy as np
         if hasattr(my_data, "all_chunks"):
             # Compute constants strictly on training data to prevent data leakage
-            if len(train_indices) > 0:
-                train_data_stack = np.concatenate([my_data.all_chunks[i] for i in train_indices], axis=0).astype(np.float64)
-            else:
-                train_data_stack = np.concatenate([my_data.all_chunks[i] for i in val_indices], axis=0).astype(np.float64)
+            train_data_stack = np.concatenate([my_data.all_chunks[i] for i in train_indices], axis=0)
             if config["data_normalization"] in ["standardization", "per_sample_std"]:
                 mean = np.mean(train_data_stack, axis=0)
                 std = np.std(train_data_stack, axis=0)
+                my_data.mean = mean
+                my_data.std = std
+                my_data.norm_type = config["data_normalization"]
                 for i in range(len(my_data.all_chunks)):
                     my_data.all_chunks[i] = (my_data.all_chunks[i] - mean) / (std + 1e-8)
             elif config["data_normalization"] in ["minmax", "per_sample_minmax"]:
                 min_val = np.min(train_data_stack, axis=0)
                 max_val = np.max(train_data_stack, axis=0)
+                my_data.min_val = min_val
+                my_data.max_val = max_val
+                my_data.norm_type = config["data_normalization"]
                 for i in range(len(my_data.all_chunks)):
                     my_data.all_chunks[i] = (my_data.all_chunks[i] - min_val) / (max_val - min_val + 1e-8)
         else:
             normalizer = Normalizer(config["data_normalization"])
+            my_data.normalizer = normalizer
             if len(train_indices):
                 train_data = normalizer.normalize(train_data)
             if len(val_indices):
                 val_data = normalizer.normalize(val_data)
+            if len(test_indices):
+                test_data = normalizer.normalize(test_data)
 
     # Initialize data generators
     task_dataset_class, collate_fn = load_task_datasets(config)
@@ -113,6 +124,18 @@ def load_data(config, logger, save_data=True):
         collate_fn=lambda x: collate_fn(x, max_len=my_data.max_seq_len),
     )
 
+    test_loader = None
+    if len(test_indices) > 0:
+        test_dataset = task_dataset_class(test_data, test_indices)
+        test_loader = DataLoader(
+            dataset=test_dataset,
+            batch_size=config["batch_size"],
+            shuffle=False,
+            num_workers=config["num_workers"],
+            pin_memory=True,
+            collate_fn=lambda x: collate_fn(x, max_len=my_data.max_seq_len),
+        )
+
     train_loader = None
     if config["val_ratio"] < 1:
         train_dataset = task_dataset_class(train_data, train_indices)
@@ -125,4 +148,4 @@ def load_data(config, logger, save_data=True):
             collate_fn=lambda x: collate_fn(x, max_len=my_data.max_seq_len),
         )
 
-    return train_loader, val_loader, my_data
+    return train_loader, val_loader, test_loader, my_data

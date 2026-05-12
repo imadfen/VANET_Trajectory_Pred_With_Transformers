@@ -1,3 +1,4 @@
+import pandas as pd
 import logging
 import os
 import time
@@ -39,7 +40,7 @@ def load_task_model(config):
         raise NotImplementedError("Task '{}' not implemented".format(task))
 
 
-def create_model(config, train_loader, val_loader, data, logger, device):
+def create_model(config, train_loader, val_loader, test_loader, data, logger, device):
     """Create model from configuration"""
 
     model_class = load_task_model(config)
@@ -94,7 +95,17 @@ def create_model(config, train_loader, val_loader, data, logger, device):
         intent_weight=config.get("intent_weight", 0.0),
     )
 
-    return model, optimizer, trainer, val_evaluator, start_epoch
+    test_evaluator = model_class(
+        model,
+        test_loader,
+        device,
+        loss_module,
+        print_interval=config["print_interval"],
+        console=config["console"],
+        intent_weight=config.get("intent_weight", 0.0),
+    ) if test_loader is not None else None
+
+    return model, optimizer, trainer, val_evaluator, test_evaluator, start_epoch
 
 
 def evaluate(evaluator, config=None, save_embeddings=True, save_data=True):
@@ -198,6 +209,7 @@ def train(
 
     best_value = 1e16  # initialize with +inf due to minimizing of metric (loss)
     best_metrics = {}
+    loss_history = []
 
     # Evaluate on validation before training
     aggr_metrics_val, best_metrics, best_value = validate(
@@ -270,6 +282,8 @@ def train(
                 print(f"Early Stopping, epoch {epoch}")
                 break
 
+        loss_history.append({"Epoch": epoch, "Train_Loss": aggr_metrics_train.get("loss", 0), "Val_Loss": aggr_metrics_val.get("loss", 0)})
+
         save_model(
             os.path.join(config["save_dir"], "model_{}.pth".format(mark)),
             epoch,
@@ -309,6 +323,11 @@ def train(
         )
         tensorboard_writer.close()
         torch.save(model, session.get_trial_dir() + "/model.pt")
+
+        # Save loss history to CSV
+    loss_csv_path = os.path.join(config["save_dir"], "training_loss_plots.csv")
+    pd.DataFrame(loss_history).to_csv(loss_csv_path, index=False)
+    logger.info(f"Saved training loss history to {loss_csv_path}")
 
     return aggr_metrics_val, best_metrics, best_value
 
