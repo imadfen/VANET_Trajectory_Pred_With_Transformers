@@ -94,6 +94,20 @@ def create_model(config, train_loader, val_loader, data, logger, device):
         intent_weight=config.get("intent_weight", 0.0),
     )
 
+    # ── Step 2.5: load cluster-derived intent labels if available ────────────
+    labels_path = config.get("intent_labels_path")
+    if labels_path and os.path.exists(labels_path) and config.get("intent_weight", 0.0) > 0:
+        intent_labels_tensor = torch.load(labels_path, map_location="cpu")
+        trainer.intent_labels = intent_labels_tensor
+        logger.info(
+            f"Loaded intent labels: {intent_labels_tensor.shape} from {labels_path}"
+        )
+    elif config.get("intent_weight", 0.0) > 0:
+        logger.warning(
+            "intent_weight > 0 but no intent_labels_path found in config. "
+            "Run src/deploy/attach_labels.py first (Step 2.5)."
+        )
+
     return model, optimizer, trainer, val_evaluator, start_epoch
 
 

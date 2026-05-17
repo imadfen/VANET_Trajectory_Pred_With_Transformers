@@ -280,10 +280,36 @@ python src/clustering/run.py \
 * **Result:** Runs classical HDBSCAN, prints the Silhouette Score, drops fast Nearest-Neighbor index trees (`.pkl` files) into an `experiments/dual_loop_run_XXX/clusters/` directory, and **generates intent labels** out of those clusters.
 
 ### Step 2.5: The Fine-Tuning Loop (Train the Intent Head)
-*(This is the crucial step to wake up the dual-loop logic!)* 
-Now that Phase 2 has algorithmically generated the "Intent Labels" (Maintain, Turn, Exit, Brake) out of the raw data, you merge those labels back into your dataset and run `main.py` ONE more time.
-* This time, you pass `--load_model=experiments/dual_loop_run_XXX/model_best.pth` and ensure `"intent_weight": 1.0` is set in your configuration file.
-* **Result:** The Transformer's Intent Head officially learns what the clusters mean, and can now spit out the `intent_logits` needed by Loop B!
+*(This is the crucial step to wake up the dual-loop logic!)*
+
+Phase 2 produced HDBSCAN clusters — but those are raw integer IDs (0, 1, 2 …), not named intents. This step maps them to the 4 vehicle intent classes, saves them as a label tensor, and re-trains the Transformer's Intent Head on those labels.
+
+**Run these 3 commands in order:**
+
+```bash
+# 1. Map cluster IDs → intent labels and patch configuration.json
+python src/deploy/attach_labels.py \
+  --folder=experiments \
+  --model_file=dual_loop_run_2026-XX-XX_XXXX
+
+# 2. Review the printed mapping — make sure it makes sense:
+#    e.g. "HDBSCAN cluster 0 → 0 (MaintainLane)"
+#         "HDBSCAN cluster 1 → 3 (Brake)"
+#    No code edit needed unless you want to override a specific cluster.
+
+# 3. Fine-tune the Intent Head (loads pre-trained weights, adds intent loss)
+python main.py \
+  --config=experiments/dual_loop_run_XXXX/configuration.json \
+  --load_model=experiments/dual_loop_run_XXXX/checkpoints/model_best.pth \
+  --name=finetune_intent
+```
+
+**What happens internally:**
+- `attach_labels.py` reads the HDBSCAN cluster IDs → maps them to 0/1/2/3 → saves `intent_labels.pt` → automatically patches `intent_weight=1.0` into `configuration.json`
+- On the next `main.py` run, `model.py` loads `intent_labels.pt` at startup and attaches it to the trainer
+- Training loss becomes: `MSE + 1.0 × CrossEntropy(intent_head, labels)` → the Intent Head wakes up and learns!
+
+* **Result:** The Transformer can now output `intent_logits` → `P_stable` → Loop B MAC backoff timer. The full dual-loop pipeline is active.
 
 ### Step 3: See the Polygons Live (Phase 3)
 Run the physical reachability logic using the trees we just grouped.
