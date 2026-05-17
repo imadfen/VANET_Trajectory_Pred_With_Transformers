@@ -37,7 +37,7 @@ print(f"  PASS  4 chunks → {filtered.shape[0]} fully unpadded")
 
 # ── 3. separate_data_to_class ─────────────────────────────────────────────
 print("[Test 3] separate_data_to_class ...")
-N, T, F = 12, 50, 23
+N, T, F = 12, 50, 51
 data   = np.random.randn(N, T, F)
 labels = np.array([0, 0, 1, 1, 2, 0, 3, 1, 2, 3, 0, 2])
 grouped = separate_data_to_class(data, labels, size=4)
@@ -66,7 +66,7 @@ print(f"  PASS  all classes capped at ≤2 samples")
 
 # ── 6. get_initial_conditions: pos and vel from VANET chunk ──────────────
 print("[Test 6] get_initial_conditions from VANET chunk ...")
-chunk = np.zeros((50, 23))
+chunk = np.zeros((50, 51))
 chunk[:, IDX_X]       = np.linspace(0, 100, 50)   # X from 0→100 m
 chunk[:, IDX_Y]       = 5.0                        # constant lane Y
 chunk[:, IDX_SPEED]   = 20.0                       # 20 m/s

@@ -25,13 +25,20 @@ VEHICLE_LABELS = {
 }
 REVERSED_VEHICLE_LABELS = {v: k for k, v in VEHICLE_LABELS.items()}
 
-# 23 VANET feature names (indices 0=X, 1=Y, 2=Speed ...)
+# 51 VANET feature names (indices 0=X, 1=Y, 2=Speed ...)
 VANET_FEATURE_NAMES = [
     'X', 'Y', 'Speed', 'Acceleration', 'Heading', 'AngularVelocity',
     'LaneID', 'LaneDist',
     'Neigh1_Rx', 'Neigh1_Ry', 'Neigh1_RSpeed', 'Neigh1_RHeading',
     'Neigh2_Rx', 'Neigh2_Ry', 'Neigh2_RSpeed', 'Neigh2_RHeading',
     'Neigh3_Rx', 'Neigh3_Ry', 'Neigh3_RSpeed', 'Neigh3_RHeading',
+    'Neigh4_Rx', 'Neigh4_Ry', 'Neigh4_RSpeed', 'Neigh4_RHeading',
+    'Neigh5_Rx', 'Neigh5_Ry', 'Neigh5_RSpeed', 'Neigh5_RHeading',
+    'Neigh6_Rx', 'Neigh6_Ry', 'Neigh6_RSpeed', 'Neigh6_RHeading',
+    'Neigh7_Rx', 'Neigh7_Ry', 'Neigh7_RSpeed', 'Neigh7_RHeading',
+    'Neigh8_Rx', 'Neigh8_Ry', 'Neigh8_RSpeed', 'Neigh8_RHeading',
+    'Neigh9_Rx', 'Neigh9_Ry', 'Neigh9_RSpeed', 'Neigh9_RHeading',
+    'Neigh10_Rx', 'Neigh10_Ry', 'Neigh10_RSpeed', 'Neigh10_RHeading',
     'AvgDistToSender', 'AvgMsgDelay', 'PacketLossRate',
 ]
 

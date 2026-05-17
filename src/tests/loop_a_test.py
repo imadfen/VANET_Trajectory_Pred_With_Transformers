@@ -9,9 +9,9 @@ from src.loops.loop_a import DiscrepancyMonitor
 monitor = DiscrepancyMonitor(epsilon=0.5)
 
 # 2. Fake some data: predictions vs reality.
-# Say the array is [50 time steps, 23 features]
-prediction = np.zeros((50, 23)) 
-reality    = np.zeros((50, 23)) + 1.0  # Reality was vastly different!
+# Say the array is [50 time steps, 51 features]
+prediction = np.zeros((50, 51)) 
+reality    = np.zeros((50, 51)) + 1.0  # Reality was vastly different!
 
 # 3. Ask Loop A what to do!
 decision = monitor.check(prediction, reality)

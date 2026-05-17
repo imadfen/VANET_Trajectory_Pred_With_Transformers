@@ -41,7 +41,7 @@ print(f"  PASS  labels = {list(labels)} → {[VEHICLE_LABELS[l] for l in labels]
 
 # ── 4. label_trajectories: grouping by label ──────────────────────────────
 print("[Test 4] label_trajectories grouping ...")
-N, T, F = 8, 50, 23
+N, T, F = 8, 50, 51
 data     = np.random.randn(N, T, F)
 padding  = np.ones((N, T), dtype=bool)
 clusters = np.array([0, 1, 0, 2, 1, 0, 3, 2])

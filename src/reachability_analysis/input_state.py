@@ -1,7 +1,7 @@
 """
 Vehicle state vector utilities for Phase 3 reachability analysis.
 
-State vector: [X, Y, Speed, Heading]  — indices (0, 1, 2, 4) from the 23-feature VANET vector.
+State vector: [X, Y, Speed, Heading]  — indices (0, 1, 2, 4) from the 51-feature VANET vector.
 Velocity is derived as (Speed * cos(Heading), Speed * sin(Heading)).
 """
 
@@ -18,7 +18,7 @@ VEHICLE_LABELS = {
     3: "Brake",
 }
 
-# Feature indices inside the 23-dim VANET vector
+# Feature indices inside the 51-dim VANET vector
 IDX_X       = 0
 IDX_Y       = 1
 IDX_SPEED   = 2

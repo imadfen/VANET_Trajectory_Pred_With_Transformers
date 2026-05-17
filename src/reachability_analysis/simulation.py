@@ -74,7 +74,7 @@ REVERSED_LABELS = {v: k for k, v in VEHICLE_LABELS.items()}
 # ---------------------------------------------------------------------------
 
 def get_initial_conditions(traj_chunk: np.ndarray):
-    """Extract (pos, vel) from the last row of a (seq_len, 23) VANET chunk."""
+    """Extract (pos, vel) from the last row of a (seq_len, 51) VANET chunk."""
     last = traj_chunk[-1]
     pos = np.array([last[IDX_X], last[IDX_Y]])
     speed   = float(last[IDX_SPEED])
@@ -236,7 +236,7 @@ def reachability_for_all_clusters(
 # ---------------------------------------------------------------------------
 
 def run_scenario(
-    trajectory: np.ndarray,   # (seq_len, 23) — current vehicle window
+    trajectory: np.ndarray,   # (seq_len, 51) — current vehicle window
     config: dict,
     cluster_labels: list,
     show_plot: bool = False,
