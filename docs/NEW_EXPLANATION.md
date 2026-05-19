@@ -268,7 +268,7 @@ python main.py \
   --config=config_after_finetuning/configuration.json \
   --name=dual_loop_run
 ```
-* **Result:** It finishes validation and outputs the golden memory file containing embeddings: `experiments/dual_loop_run_XXX/output_data.pt`.
+* **Result:** Saves model checkpoints to `experiments/dual_loop_run_XXX/checkpoints/model_best.pth`. Training does **not** produce `output_data.pt` — that file is generated in Step 2 during the eval-only pass run by `clustering/run.py`.
 
 ### Step 2: Build the "Memory" & Labels (Phase 2)
 Hook into the memory file generated above to build the cluster logic.
@@ -328,6 +328,30 @@ python src/reachability_analysis/inclusion_accuracy.py \
   --model_file=dual_loop_run_XXX
 ```
 * **Result:** Computes exact percentage of times the ground-truth car remained inside the predictive bounds!
+
+### Step 5: Export Decisions for OMNeT++ Replay
+Generate the `decisions.json` file that maps every vehicle + timestep to its Loop A/B decision. This file is fed into the second OMNeT++ simulation run to measure real network improvement.
+```bash
+python src/deploy/export_decisions.py \
+  --folder=experiments \
+  --model_file=dual_loop_run_XXXX \
+  --data_dir=resources/VANET_data/raw/dataset-35m-10hz-packet_loss_32%/raw/ \
+  --output=decisions.json
+```
+* **What it does:** Runs a sliding window over every vehicle CSV, evaluates Loop A (`DiscrepancyMonitor`) and Loop B (`MACBiasMapper`) at each timestep, and writes the minimal decision per timestamp.
+* **Output format:**
+```json
+{
+  "data_car_32_t18003": {
+    "18063.00": {"flag": 0, "mac_wait_ms": 100.0},
+    "18063.10": {"flag": 1, "mac_wait_ms": 1.0}
+  }
+}
+```
+* **`flag=0`** → car is stable → suppress beacon to **2 Hz**
+* **`flag=1`** → car is braking/swerving → raise beacon to **10 Hz**
+* **`mac_wait_ms`** → how long this car must wait before relaying an emergency packet
+* **Result:** `decisions.json` is ready to be read by `DataCollectorApp.cc` in the second OMNeT++ run. See `docs/omnetpp_integration.md` for the full replay instructions.
 
 ---
 

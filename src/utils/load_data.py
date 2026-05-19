@@ -51,6 +51,18 @@ def load_data(config, logger, save_data=True):
 
     logger.info("{} samples may be used for training".format(len(train_indices)))
     logger.info("{} samples will be used for validation".format(len(val_indices)))
+
+    # ── Memory guard: sub-sample for eval/clustering if requested ───────────
+    eval_subset = config.get("eval_subset")
+    if eval_subset is not None and eval_subset < len(val_indices):
+        import random
+        rng = random.Random(config.get("seed", 1337))
+        val_indices = rng.sample(list(val_indices), eval_subset)
+        logger.info(
+            f"eval_subset={eval_subset}: sub-sampled val_indices to {len(val_indices)} chunks "
+            f"(RAM ~{eval_subset * 60 * 51 * 4 / 1e9:.2f} GB)"
+        )
+
     save_indices(
         indices={"train": train_indices, "val": val_indices},
         folder=config["output_dir"],
@@ -74,24 +86,44 @@ def load_data(config, logger, save_data=True):
 
     # Pre-process features
     if config["data_normalization"] != "none":
-        logger.info("Normalizing data ...")
+        logger.info("Normalizing data (streaming, memory-efficient) ...")
         import numpy as np
         if hasattr(my_data, "all_chunks"):
-            # Compute constants strictly on training data to prevent data leakage
-            if len(train_indices) > 0:
-                train_data_stack = np.concatenate([my_data.all_chunks[i] for i in train_indices], axis=0).astype(np.float64)
-            else:
-                train_data_stack = np.concatenate([my_data.all_chunks[i] for i in val_indices], axis=0).astype(np.float64)
-            if config["data_normalization"] in ["standardization", "per_sample_std"]:
-                mean = np.mean(train_data_stack, axis=0)
-                std = np.std(train_data_stack, axis=0)
+            stat_indices = train_indices if len(train_indices) > 0 else val_indices
+
+            if config["data_normalization"] in ["minmax", "per_sample_minmax"]:
+                # --- Streaming min/max: O(1) memory regardless of dataset size ---
+                first = my_data.all_chunks[stat_indices[0]].astype(np.float32)
+                running_min = first.min(axis=0)   # (F,)
+                running_max = first.max(axis=0)   # (F,)
+                for i in stat_indices[1:]:
+                    chunk = my_data.all_chunks[i].astype(np.float32)
+                    running_min = np.minimum(running_min, chunk.min(axis=0))
+                    running_max = np.maximum(running_max, chunk.max(axis=0))
+                scale = (running_max - running_min) + 1e-8
                 for i in range(len(my_data.all_chunks)):
-                    my_data.all_chunks[i] = (my_data.all_chunks[i] - mean) / (std + 1e-8)
-            elif config["data_normalization"] in ["minmax", "per_sample_minmax"]:
-                min_val = np.min(train_data_stack, axis=0)
-                max_val = np.max(train_data_stack, axis=0)
+                    my_data.all_chunks[i] = (
+                        my_data.all_chunks[i].astype(np.float32) - running_min
+                    ) / scale
+
+            elif config["data_normalization"] in ["standardization", "per_sample_std"]:
+                # --- Welford online algorithm: O(1) memory, numerically stable ---
+                n = 0
+                mean = np.zeros(my_data.all_chunks[stat_indices[0]].shape[1], dtype=np.float64)
+                M2   = np.zeros_like(mean)
+                for i in stat_indices:
+                    chunk = my_data.all_chunks[i].astype(np.float64)  # (T, F)
+                    for row in chunk:
+                        n   += 1
+                        delta = row - mean
+                        mean += delta / n
+                        M2   += delta * (row - mean)
+                std = np.sqrt(M2 / max(n - 1, 1)).astype(np.float32)
+                mean = mean.astype(np.float32)
                 for i in range(len(my_data.all_chunks)):
-                    my_data.all_chunks[i] = (my_data.all_chunks[i] - min_val) / (max_val - min_val + 1e-8)
+                    my_data.all_chunks[i] = (
+                        my_data.all_chunks[i].astype(np.float32) - mean
+                    ) / (std + 1e-8)
         else:
             normalizer = Normalizer(config["data_normalization"])
             if len(train_indices):
@@ -109,7 +141,7 @@ def load_data(config, logger, save_data=True):
         batch_size=config["batch_size"],
         shuffle=False,
         num_workers=config["num_workers"],
-        pin_memory=True,
+        pin_memory=False,
         collate_fn=lambda x: collate_fn(x, max_len=my_data.max_seq_len),
     )
 

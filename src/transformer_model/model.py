@@ -125,7 +125,26 @@ def evaluate(evaluator, config=None, save_embeddings=True, save_data=True):
         outputs_filepath = os.path.join(
             os.path.join(config["output_dir"], "output_data.pt")
         )
-        torch.save(per_batch, outputs_filepath)
+        
+        # Consolidate lists seamlessly into PyTorch tensors directly.
+        # This keeps it in the original PyTorch architecture while preventing pickle from eating RAM.
+        save_dict = {}
+        for k in list(per_batch.keys()):
+            if k == "attn_maps":
+                per_batch[k] = [] # drop immediately
+            elif k == "IDs":
+                save_dict[k] = [item for sublist in per_batch[k] for item in sublist]
+                per_batch[k] = []
+            elif k == "metrics":
+                save_dict[k] = torch.tensor(per_batch[k])
+                per_batch[k] = []
+            elif len(per_batch[k]) > 0:
+                import numpy as np
+                save_dict[k] = torch.from_numpy(np.concatenate(per_batch[k], axis=0))
+                per_batch[k] = [] # <--- CRITICAL FIX 2: Free list aggressively before next key grows to avoid 2x allocation
+        
+        torch.save(save_dict, outputs_filepath)
+        del save_dict
 
     print_str = "Evaluation Summary: "
     for k, v in aggr_metrics.items():
@@ -150,6 +169,8 @@ def validate(
     eval_start_time = time.time()
     with torch.no_grad():
         aggr_metrics, per_batch = val_evaluator.evaluate(epoch_num=epoch, keep_all=True)
+    
+    del per_batch  # <--- CRITICAL FIX 1: free per_batch immediately to avoid leaking entire validation dataset every epoch
     eval_runtime = time.time() - eval_start_time
     logger.info(
         "Validation runtime: {} hours, {} minutes, {} seconds\n".format(
@@ -499,7 +520,7 @@ class UnsupervisedAttentionModel(BaseModel):
                 per_batch["attn_maps"].append(
                     [a.cpu().numpy() for a in attn_maps] if attn_maps else []
                 )
-                per_batch["metrics"].append([loss.cpu().numpy()])
+                per_batch["metrics"].append(mean_loss)  # store scalar not array
                 per_batch["IDs"].append(IDs)
                 per_batch["padding_masks"].append(padding_masks.cpu().numpy())
                 if save_embeddings:

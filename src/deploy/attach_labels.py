@@ -78,13 +78,18 @@ def load_cluster_assignments(clusters_dir: str):
 
     Returns np.ndarray of shape (N_chunks,) with cluster IDs (-1 = noise).
     """
-    label_path = os.path.join(clusters_dir, "cluster_labels.npy")
+    import pickle
+    label_path = os.path.join(clusters_dir, "cluster_labels.pkl")
+    
     if not os.path.exists(label_path):
         raise FileNotFoundError(
-            f"cluster_labels.npy not found at: {label_path}\n"
+            f"cluster_labels.pkl not found at: {clusters_dir}\n"
             "Run Phase 2 (src/clustering/run.py) first."
         )
-    labels = np.load(label_path)
+            
+    with open(label_path, "rb") as f:
+        labels = pickle.load(f)
+        
     logger.info(f"Loaded cluster labels: {labels.shape}, unique={np.unique(labels)}")
     return labels
 
@@ -186,7 +191,12 @@ def attach_labels(
 
     # 1. Load Phase 1 output to verify chunk count
     output_data   = load_output_data(output_dir)
-    n_chunks      = sum(e.shape[0] for e in output_data["embeddings"])
+    
+    if isinstance(output_data["embeddings"], list):
+        n_chunks = sum(e.shape[0] for e in output_data["embeddings"])
+    else:
+        n_chunks = output_data["embeddings"].shape[0]
+        
     logger.info(f"Total chunks in output_data.pt: {n_chunks}")
 
     # 2. Load Phase 2 cluster assignments
@@ -208,13 +218,7 @@ def attach_labels(
     # 5. Patch configuration.json
     patch_config(config_path, intent_weight, labels_path)
 
-    logger.info(
-        "\n✅  Done! Now run fine-tuning:\n\n"
-        f"    python main.py \\\n"
-        f"        --config={os.path.relpath(config_path, ROOT)} \\\n"
-        f"        --load_model={os.path.relpath(exp_dir, ROOT)}/checkpoints/model_best.pth \\\n"
-        f"        --name=finetune_intent\n"
-    )
+    logger.info("Done!")
 
 
 # ---------------------------------------------------------------------------

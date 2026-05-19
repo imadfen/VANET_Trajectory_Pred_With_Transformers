@@ -25,7 +25,14 @@ class Options(object):
         self.parser.add_argument(
             "--data_dir", default="./data", help="Data directory. Required."
         )
+        self.parser.add_argument(
+            "--data_subset",
+            type=int,
+            default=None,
+            help="Max number of chunks to load (training + eval). Use to limit RAM. E.g. 200000.",
+        )
         self.parser.add_argument("--load_model", help="Path to pre-trained model.")
+
         self.parser.add_argument(
             "--resume",
             action="store_true",

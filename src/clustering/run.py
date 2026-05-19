@@ -60,18 +60,24 @@ VANET_FEATURE_NAMES = [
 
 def load_embeddings_from_pt(output_dir: str):
     """Load the per_batch tensors saved by the val evaluator."""
-    pt_file = torch.load(os.path.join(output_dir, "output_data.pt"))
+    # load from .pt originally
+    pt_file = torch.load(os.path.join(output_dir, "output_data.pt"), map_location="cpu")
 
-    all_embeddings = np.concatenate(pt_file["embeddings"], axis=0)
-    all_predictions = np.concatenate(pt_file["predictions"], axis=0)
-    all_targets = np.concatenate(pt_file["targets"], axis=0)
-    padding_masks = np.concatenate(pt_file["padding_masks"], axis=0)
-    target_masks = np.concatenate(pt_file["target_masks"], axis=0)
+    def to_numpy(t):
+        return t.numpy() if hasattr(t, "numpy") else t
+
+    all_embeddings = to_numpy(pt_file.pop("embeddings"))
+    all_predictions = to_numpy(pt_file.pop("predictions"))
+    all_targets = to_numpy(pt_file.pop("targets"))
+    padding_masks = to_numpy(pt_file.pop("padding_masks"))
+    target_masks = to_numpy(pt_file.pop("target_masks"))
 
     # intent_logits may not be saved in older runs
     intent_logits = None
     if "intent_logits" in pt_file:
-        intent_logits = np.concatenate(pt_file["intent_logits"], axis=0)
+        intent_logits = to_numpy(pt_file.pop("intent_logits"))
+        
+    del pt_file
 
     return all_targets, all_embeddings, all_predictions, padding_masks, target_masks, intent_logits
 
@@ -82,6 +88,7 @@ def load_config(
     index: int = 2,
     index_data: int = 0,
     original_data: bool = False,
+    eval_subset: int = None,
 ) -> dict:
     config_path = os.path.join(folder, model_file, "configuration.json")
     with open(config_path) as f:
@@ -101,6 +108,8 @@ def load_config(
     config["val_ratio"] = 1.0
     config["dropout"] = 0.0
     config["hyperparameter_tuning"] = False
+    config["eval_subset"] = eval_subset   # None = use all chunks
+    config["original_data"] = original_data
 
     create_dirs([config["output_dir"]])
     return config
@@ -139,7 +148,9 @@ def get_embedding(config: dict, data_chunks: np.ndarray, chunk_indices: list):
     model, _, _, val_evaluator, _ = create_model(config, None, loader, tmp_data, logger, device="cpu")
 
     _, embedding_data = evaluate(val_evaluator, config=config, save_embeddings=True, save_data=False)
-    return embedding_data["embeddings"][0]  # (N, embedding_dim)
+    embeddings = embedding_data["embeddings"][0].copy()
+    del embedding_data
+    return embeddings
 
 
 def get_cluster(config: dict, embedding: np.ndarray):
@@ -194,6 +205,9 @@ def run_clusters(
     logger.info(
         f"Loaded embeddings: {all_embeddings.shape}, targets: {all_targets.shape}"
     )
+    
+    # Free what clustering doesn't need
+    del all_predictions, target_masks, intent_logits
 
     cluster_instance = HDBSCANCluster(
         embeddings=all_embeddings,
@@ -239,6 +253,9 @@ if __name__ == "__main__":
                         help="Load pre-computed HDBSCAN clusters.")
     parser.add_argument("--min_cluster_size", type=int, default=5)
     parser.add_argument("--min_samples", type=int, default=30)
+    parser.add_argument("--eval_subset", type=int, default=None,
+                        help="Randomly sample this many chunks for eval/clustering "
+                             "to reduce RAM usage (e.g. 50000). Default: use all chunks.")
 
     args = parser.parse_args()
 
@@ -247,6 +264,7 @@ if __name__ == "__main__":
         model_file=args.model_file,
         index=args.index,
         index_data=args.index_data,
+        eval_subset=args.eval_subset,
     )
 
     run_clusters(
