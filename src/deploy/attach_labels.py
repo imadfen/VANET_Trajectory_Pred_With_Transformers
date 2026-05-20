@@ -144,11 +144,30 @@ def hdbscan_to_intent(cluster_labels: np.ndarray) -> np.ndarray:
     return intent_labels
 
 
-def save_intent_labels(intent_labels: np.ndarray, output_dir: str) -> str:
-    """Save intent_labels.pt alongside output_data.pt."""
+def save_intent_labels(intent_labels: np.ndarray, output_data: dict, output_dir: str) -> str:
+    """Save intent_labels.pt mapped explicitly via global IDs."""
     out_path = os.path.join(output_dir, "intent_labels.pt")
-    torch.save(torch.tensor(intent_labels, dtype=torch.long), out_path)
-    logger.info(f"Saved intent labels → {out_path}")
+    
+    # 1. Get raw dataset IDs for each labeled chunk
+    chunk_ids = output_data["IDs"]
+    if hasattr(chunk_ids, "numpy"):
+        chunk_ids = chunk_ids.numpy()
+        
+    # 2. Build a globally spanning sparse tensor defaulting to -100
+    # PyTorch's F.cross_entropy defaults to ignore_index=-100 natively.
+    # Therefore, any index without a label inherently skips gradient backprop without punishing the network!
+    max_id = max(chunk_ids) if len(chunk_ids) > 0 else 0
+    safe_tensor_size = max(1000000, max_id + 500000)
+    
+    sparse_intent_labels = torch.full((safe_tensor_size,), -100, dtype=torch.long)
+    sparse_intent_labels[chunk_ids] = torch.tensor(intent_labels, dtype=torch.long)
+    
+    torch.save(sparse_intent_labels, out_path)
+    
+    # Clean up heavy sparse tensors instantly
+    del sparse_intent_labels, chunk_ids
+    
+    logger.info(f"Saved sparse global intent labels mapped to IDs → {out_path}")
     return out_path
 
 
@@ -213,12 +232,15 @@ def attach_labels(
     intent_labels = hdbscan_to_intent(cluster_labels)
 
     # 4. Save intent_labels.pt
-    labels_path = save_intent_labels(intent_labels, output_dir)
+    labels_path = save_intent_labels(intent_labels, output_data, output_dir)
+    
+    # 5. Clear aggressive memory blocks explicitly 
+    del output_data, cluster_labels
 
-    # 5. Patch configuration.json
+    # 6. Patch configuration.json
     patch_config(config_path, intent_weight, labels_path)
 
-    logger.info("Done!")
+    logger.info("✅Done!")
 
 
 # ---------------------------------------------------------------------------

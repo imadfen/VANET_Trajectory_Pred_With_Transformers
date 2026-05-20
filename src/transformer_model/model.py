@@ -69,6 +69,11 @@ def create_model(config, train_loader, val_loader, data, logger, device):
             config["lr_decay"],
         )
     model.to(device)
+    
+    # ── Enable DataParallel to saturate kaggle's T4x2 environment automatically ──
+    if torch.cuda.device_count() > 1 and device != "cpu":
+        model = torch.nn.DataParallel(model)
+        logger.info(f"Successfully activated DataParallel across {torch.cuda.device_count()} GPUs!")
 
     loss_module = get_loss_module(config)
 
@@ -391,7 +396,11 @@ class BaseModel(object):
 
         dyn_string = template.format(*content)
         dyn_string = prefix + dyn_string
-        self.printer.print(dyn_string)
+        
+        # Lock output to a single refreshing line to prevent Kaggle console UI crash
+        print(f"\r{dyn_string}", end="", flush=True)
+        if i_batch == total_batches - 1:
+            print()
 
 
 class UnsupervisedAttentionModel(BaseModel):
