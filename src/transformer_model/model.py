@@ -39,7 +39,7 @@ def load_task_model(config):
         raise NotImplementedError("Task '{}' not implemented".format(task))
 
 
-def create_model(config, train_loader, val_loader, data, logger, device):
+def create_model(config, train_loader, val_loader, test_loader, data, logger, device):
     """Create model from configuration"""
 
     model_class = load_task_model(config)
@@ -99,21 +99,30 @@ def create_model(config, train_loader, val_loader, data, logger, device):
         intent_weight=config.get("intent_weight", 0.0),
     )
 
-    # ── Step 2.5: load cluster-derived intent labels if available ────────────
-    labels_path = config.get("intent_labels_path")
-    if labels_path and os.path.exists(labels_path) and config.get("intent_weight", 0.0) > 0:
-        intent_labels_tensor = torch.load(labels_path, map_location="cpu")
-        trainer.intent_labels = intent_labels_tensor
-        logger.info(
-            f"Loaded intent labels: {intent_labels_tensor.shape} from {labels_path}"
-        )
-    elif config.get("intent_weight", 0.0) > 0:
-        logger.warning(
-            "intent_weight > 0 but no intent_labels_path found in config. "
-            "Run src/deploy/attach_labels.py first (Step 2.5)."
-        )
+test_evaluator = model_class(
+    model,
+    test_loader,
+    device,
+    loss_module,
+    print_interval=config["print_interval"],
+    console=config["console"],
+) if test_loader is not None else None
 
-    return model, optimizer, trainer, val_evaluator, start_epoch
+# — Step 2.5: load cluster-derived intent labels if available ————
+labels_path = config.get("intent_labels_path")
+if labels_path and os.path.exists(labels_path) and config.get("intent_weight", 0.0) > 0:
+    intent_labels_tensor = torch.load(labels_path, map_location="cpu")
+    trainer.intent_labels = intent_labels_tensor
+    logger.info(
+        f"Loaded intent labels: {intent_labels_tensor.shape} from {labels_path}"
+    )
+elif config.get("intent_weight", 0.0) > 0:
+    logger.warning(
+        "intent_weight > 0 but no intent_labels_path found in config. "
+        "Run src/deploy/attach_labels.py first (Step 2.5)."
+    )
+
+return model, optimizer, trainer, val_evaluator, test_evaluator, start_epoch
 
 
 def evaluate(evaluator, config=None, save_embeddings=True, save_data=True):
@@ -303,9 +312,6 @@ def train(
                 epoch,
             )
 
-            if config["hyperparameter_tuning"]:
-                tune.report({"loss": aggr_metrics_val["loss"], "epoch": epoch})
-
             if early_stopping is not None and early_stopping(aggr_metrics_val["loss"]):
                 print(f"Early Stopping, epoch {epoch}")
                 break
@@ -316,6 +322,16 @@ def train(
             model,
             optimizer,
         )
+        
+        if config["hyperparameter_tuning"]:
+            from ray.tune import Checkpoint
+            # Use a dedicated, persistent folder instead of tempfile to ensure Ray Tune can access it asynchronously
+            checkpoint_dir = os.path.join(config["save_dir"], "ray_checkpoint")
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            checkpoint_path = os.path.join(checkpoint_dir, "model.pth")
+            save_model(checkpoint_path, epoch, model, optimizer)
+            checkpoint = Checkpoint.from_directory(checkpoint_dir)
+            tune.report({"loss": aggr_metrics_val["loss"], "epoch": epoch}, checkpoint=checkpoint)
 
         # Learning rate scheduling
         if epoch % config["lr_step"] == 0:

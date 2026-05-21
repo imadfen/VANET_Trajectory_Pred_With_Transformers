@@ -63,24 +63,34 @@ if __name__ == "__main__":
         tune.with_parameters(run), resources={"cpu": usable_cpus, "gpu": num_gpus}  # Allocate all safe CPUs to this single trial
     )
 
-    tuner = tune.Tuner(
-        trainable=objective,
-        run_config=air.RunConfig(
-            name="VANET_tune",
-            storage_path=os.path.abspath("./ray_results/"),
-            checkpoint_config=air.CheckpointConfig(
-                checkpoint_at_end=False,
-                checkpoint_frequency=0
+    experiment_dir = os.path.abspath("./ray_results/VANET_tune")
+
+    if tune.Tuner.can_restore(experiment_dir):
+        print(f"Resuming existing Tune experiment from: {experiment_dir}")
+        tuner = tune.Tuner.restore(
+            experiment_dir, 
+            trainable=objective, 
+            resume_unfinished=True, # Resume from where it was paused
+            resume_errored=True     # Resume any errored trials from their latest checkpoint
+        )
+    else:
+        tuner = tune.Tuner(
+            trainable=objective,
+            run_config=air.RunConfig(
+                name="VANET_tune",
+                storage_path=os.path.abspath("./ray_results/"),
+                checkpoint_config=air.CheckpointConfig(
+                    num_to_keep=1
+                ),
             ),
-        ),
-        tune_config=tune.TuneConfig(
-            metric="loss",
-            mode="min",
-            search_alg=algo,
-            num_samples=N_ITER,
-            trial_dirname_creator=lambda trial: f"trial_{trial.trial_id}",
-        ),
-    )
+            tune_config=tune.TuneConfig(
+                metric="loss",
+                mode="min",
+                search_alg=algo,
+                num_samples=N_ITER,
+                trial_dirname_creator=lambda trial: f"trial_{trial.trial_id}",
+            ),
+        )
 
     results = tuner.fit()
     ray.shutdown()

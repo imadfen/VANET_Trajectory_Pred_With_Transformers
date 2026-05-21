@@ -116,7 +116,7 @@ class Options(object):
         self.parser.add_argument(
             "--pattern",
             type=str,
-            default="*",
+            default=".*",
             help="Regex pattern used to select files contained in `data_dir`. If None, all data will be used.",
         )
         self.parser.add_argument(
@@ -124,6 +124,12 @@ class Options(object):
             type=float,
             default=0.2,
             help="Proportion of the dataset to be used as a validation set",
+        )
+        self.parser.add_argument(
+            "--test_ratio",
+            type=float,
+            default=0.1,
+            help="Proportion of the dataset to be used as a test set",
         )
         self.parser.add_argument(
             "--data_chunk_len",
