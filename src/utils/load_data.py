@@ -88,81 +88,81 @@ def load_data(config, logger, save_data=True):
             os.path.join(config["output_dir"], "original_data.pt")
         )
         torch.save({"val_data": val_data}, outputs_filepath)
-        
-# Pre-process features
-if config["data_normalization"] != "none":
-    logger.info("Normalizing data ...")
-    import numpy as np
-    if hasattr(my_data, "all_chunks"):
-        # Compute constants strictly on training data to prevent data leakage
-        train_data_stack = np.concatenate([my_data.all_chunks[i] for i in train_indices], axis=0)
-
-        if config["data_normalization"] in ["standardization", "per_sample_std"]:
-            mean = np.mean(train_data_stack, axis=0)
-            std  = np.std(train_data_stack, axis=0)
-            my_data.mean      = mean
-            my_data.std       = std
-            my_data.norm_type = config["data_normalization"]
-            for i in range(len(my_data.all_chunks)):
-                my_data.all_chunks[i] = (my_data.all_chunks[i] - mean) / (std + 1e-8)
-
-        elif config["data_normalization"] in ["minmax", "per_sample_minmax"]:
-            min_val = np.min(train_data_stack, axis=0)
-            max_val = np.max(train_data_stack, axis=0)
-            my_data.min_val   = min_val
-            my_data.max_val   = max_val
-            my_data.norm_type = config["data_normalization"]
-            for i in range(len(my_data.all_chunks)):
-                my_data.all_chunks[i] = (
-                    my_data.all_chunks[i].astype(np.float32) - min_val
-                ) / ((max_val - min_val) + 1e-8)
-
-    else:
-        normalizer = Normalizer(config["data_normalization"])
-        my_data.normalizer = normalizer
-        if len(train_indices):
-            train_data = normalizer.normalize(train_data)
-        if len(val_indices):
-            val_data = normalizer.normalize(val_data)
-        if len(test_indices):
-            test_data = normalizer.normalize(test_data)
             
-    # Initialize data generators
-    task_dataset_class, collate_fn = load_task_datasets(config)
-
-    # Dataloaders
-    val_dataset = task_dataset_class(val_data, val_indices)
-    val_loader = DataLoader(
-        dataset=val_dataset,
-        batch_size=config["batch_size"],
-        shuffle=False,
-        num_workers=config["num_workers"],
-        pin_memory=False,
-        collate_fn=lambda x: collate_fn(x, max_len=my_data.max_seq_len),
-    )
-
-    test_loader = None
-    if len(test_indices) > 0:
-        test_dataset = task_dataset_class(test_data, test_indices)
-        test_loader = DataLoader(
-            dataset=test_dataset,
+    # Pre-process features
+    if config["data_normalization"] != "none":
+        logger.info("Normalizing data ...")
+        import numpy as np
+        if hasattr(my_data, "all_chunks"):
+            # Compute constants strictly on training data to prevent data leakage
+            train_data_stack = np.concatenate([my_data.all_chunks[i] for i in train_indices], axis=0)
+    
+            if config["data_normalization"] in ["standardization", "per_sample_std"]:
+                mean = np.mean(train_data_stack, axis=0)
+                std  = np.std(train_data_stack, axis=0)
+                my_data.mean      = mean
+                my_data.std       = std
+                my_data.norm_type = config["data_normalization"]
+                for i in range(len(my_data.all_chunks)):
+                    my_data.all_chunks[i] = (my_data.all_chunks[i] - mean) / (std + 1e-8)
+    
+            elif config["data_normalization"] in ["minmax", "per_sample_minmax"]:
+                min_val = np.min(train_data_stack, axis=0)
+                max_val = np.max(train_data_stack, axis=0)
+                my_data.min_val   = min_val
+                my_data.max_val   = max_val
+                my_data.norm_type = config["data_normalization"]
+                for i in range(len(my_data.all_chunks)):
+                    my_data.all_chunks[i] = (
+                        my_data.all_chunks[i].astype(np.float32) - min_val
+                    ) / ((max_val - min_val) + 1e-8)
+    
+        else:
+            normalizer = Normalizer(config["data_normalization"])
+            my_data.normalizer = normalizer
+            if len(train_indices):
+                train_data = normalizer.normalize(train_data)
+            if len(val_indices):
+                val_data = normalizer.normalize(val_data)
+            if len(test_indices):
+                test_data = normalizer.normalize(test_data)
+                
+        # Initialize data generators
+        task_dataset_class, collate_fn = load_task_datasets(config)
+    
+        # Dataloaders
+        val_dataset = task_dataset_class(val_data, val_indices)
+        val_loader = DataLoader(
+            dataset=val_dataset,
             batch_size=config["batch_size"],
             shuffle=False,
             num_workers=config["num_workers"],
-            pin_memory=True,
+            pin_memory=False,
             collate_fn=lambda x: collate_fn(x, max_len=my_data.max_seq_len),
         )
-
-    train_loader = None
-    if config["val_ratio"] < 1:
-        train_dataset = task_dataset_class(train_data, train_indices)
-        train_loader = DataLoader(
-            dataset=train_dataset,
-            batch_size=config["batch_size"],
-            shuffle=True,
-            num_workers=config["num_workers"],
-            pin_memory=True,
-            collate_fn=lambda x: collate_fn(x, max_len=my_data.max_seq_len),
-        )
-
-    return train_loader, val_loader, test_loader, my_data
+    
+        test_loader = None
+        if len(test_indices) > 0:
+            test_dataset = task_dataset_class(test_data, test_indices)
+            test_loader = DataLoader(
+                dataset=test_dataset,
+                batch_size=config["batch_size"],
+                shuffle=False,
+                num_workers=config["num_workers"],
+                pin_memory=True,
+                collate_fn=lambda x: collate_fn(x, max_len=my_data.max_seq_len),
+            )
+    
+        train_loader = None
+        if config["val_ratio"] < 1:
+            train_dataset = task_dataset_class(train_data, train_indices)
+            train_loader = DataLoader(
+                dataset=train_dataset,
+                batch_size=config["batch_size"],
+                shuffle=True,
+                num_workers=config["num_workers"],
+                pin_memory=True,
+                collate_fn=lambda x: collate_fn(x, max_len=my_data.max_seq_len),
+            )
+    
+        return train_loader, val_loader, test_loader, my_data

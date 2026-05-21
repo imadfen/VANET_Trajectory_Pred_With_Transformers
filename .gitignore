@@ -147,4 +147,6 @@ experiments*
 *.png
 ray_results*
 
+resources/poc_dataset/
+
 .idea*
