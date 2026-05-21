@@ -112,40 +112,85 @@ class SINDData(BaseData):
         n_proc = config["n_proc"] if n_proc is None else n_proc
         self.set_num_processes(n_proc=n_proc)
         self.config = config
-        self.feature_names = ['X', 'Y', 'Speed', 'Acceleration', 'Heading', 'AngularVelocity', 'LaneID', 'LaneDist', 'Neigh1_Rx', 'Neigh1_Ry', 'Neigh1_RSpeed', 'Neigh1_RHeading', 'Neigh2_Rx', 'Neigh2_Ry', 'Neigh2_RSpeed', 'Neigh2_RHeading', 'Neigh3_Rx', 'Neigh3_Ry', 'Neigh3_RSpeed', 'Neigh3_RHeading', 'AvgDistToSender', 'AvgMsgDelay', 'PacketLossRate']
+        self.feature_names = None   # inferred dynamically from CSV headers
         self.all_df = None
         self.all_IDs = None
         self.feature_df = None
         self.max_seq_len = self.config["data_chunk_len"]
 
     def load_data(self):
-            # Load and preprocess data aggressively into memory as float32 chunks
             self.file_paths = self._gather_data_paths(self.config["data_dir"], pattern=self.config["pattern"])
             self.max_seq_len = self.config["data_chunk_len"] if self.config["data_chunk_len"] > 0 else 50
-            
+            # eval_subset takes precedence during clustering runs, then data_subset
+            max_chunks = self.config.get("eval_subset") or self.config.get("data_subset") or None
+
+            # ── Infer feature names by majority vote across first 20 files ──────
+            import pandas as pd
+            from collections import Counter
+            _probe_paths = self.file_paths[:20]
+            _col_counts = Counter()
+            _col_sets = {}
+            for _p in _probe_paths:
+                _h = pd.read_csv(_p, nrows=0)
+                _cols = tuple(c for c in _h.columns if c != "Time")
+                _col_counts[_cols] += 1
+            # Use the most common column set
+            _winner_cols = _col_counts.most_common(1)[0][0]
+            self.feature_names = list(_winner_cols)
+            logger.info(
+                f"Feature names inferred (majority vote, {len(_probe_paths)} probed): "
+                f"{len(self.feature_names)} features"
+            )
+            del _probe_paths, _col_counts, _winner_cols
+
             import gc
-            self.all_chunks = []
-            
+            _chunk_list = []
+            done = False
+
+            skipped = 0
             for filepath in self.file_paths:
+                if done:
+                    break
                 df = self.load_single(filepath)
-                # Group by track_id
+
+                # Skip files that don't have all expected feature columns
+                missing = [c for c in self.feature_names if c not in df.columns]
+                if missing:
+                    skipped += 1
+                    del df
+                    continue
+
                 for track_id, group in df.groupby("track_id"):
-                    # Extract the selected features
                     track_data = group[self.feature_names].astype(np.float32).values
-                    # Chunk up the data using max_seq_len
                     num_frames = len(track_data)
                     for start_idx in range(0, num_frames, self.max_seq_len):
                         end_idx = start_idx + self.max_seq_len
                         chunk = track_data[start_idx:end_idx]
-                        if len(chunk) > 1: # Ignore 1-frame chunks
-                            self.all_chunks.append(chunk)
+                        if len(chunk) > 1:
+                            # Pad short trailing chunks to uniform length
+                            if len(chunk) < self.max_seq_len:
+                                pad = np.zeros(
+                                    (self.max_seq_len - len(chunk), len(self.feature_names)),
+                                    dtype=np.float32,
+                                )
+                                chunk = np.vstack([chunk, pad])
+                            _chunk_list.append(chunk)
+                        if max_chunks is not None and len(_chunk_list) >= max_chunks:
+                            done = True
+                            break
+                    if done:
+                        break
 
-                # Free loop memory manually
                 del df
                 gc.collect()
 
+            self.all_chunks = _chunk_list
             self.all_IDs = list(range(len(self.all_chunks)))
-            logger.info(f"Loaded {len(self.all_chunks)} overall chunks of data.")
+            logger.info(
+                f"Loaded {len(self.all_chunks)} chunks "
+                f"({skipped} files skipped — column mismatch)."
+            )
+
     
     def _gather_data_paths(self, root_dir, pattern):
         # Implementation to gather data paths  based on a given pattern
@@ -197,13 +242,16 @@ class SINDData(BaseData):
         """"""
         if "track_id" not in df.columns:
             df["track_id"] = df.get("VehicleID", df.get("car_id", df["file_id"]))
-            
-        keep_cols = ["track_id", "Time", 'X', 'Y', 'Speed', 'Acceleration', 'Heading', 'AngularVelocity', 'LaneID', 'LaneDist', 'Neigh1_Rx', 'Neigh1_Ry', 'Neigh1_RSpeed', 'Neigh1_RHeading', 'Neigh2_Rx', 'Neigh2_Ry', 'Neigh2_RSpeed', 'Neigh2_RHeading', 'Neigh3_Rx', 'Neigh3_Ry', 'Neigh3_RSpeed', 'Neigh3_RHeading', 'AvgDistToSender', 'AvgMsgDelay', 'PacketLossRate']
+
+        # Keep track_id + Time + ALL feature columns present in this file (dynamic)
+        meta_cols = {"track_id", "Time", "file_id", "VehicleID", "car_id"}
+        feature_cols = [c for c in df.columns if c not in meta_cols]
+        keep_cols = ["track_id", "Time"] + feature_cols
 
         # Factorize non-numeric columns like LaneID into integers
         if 'LaneID' in df.columns:
             df['LaneID'] = pd.factorize(df['LaneID'])[0]
-            
+
         # sort based on time and id
         df_sorted = df.sort_values(by=["track_id", "Time"])
 
@@ -212,7 +260,8 @@ class SINDData(BaseData):
             df_sorted["file_id"].astype(str) + "_" + df_sorted["track_id"].astype(str)
         )
 
-        # keep columns
+        # keep columns (only those that exist in the df)
+        keep_cols = [c for c in keep_cols if c in df_sorted.columns]
         df_final = df_sorted[keep_cols]
 
         # remove_stationary_trajectories efficiently without massive memory transform

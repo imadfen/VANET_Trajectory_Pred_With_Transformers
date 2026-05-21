@@ -6,7 +6,6 @@ from sklearn.cluster import HDBSCAN
 from sklearn.metrics import silhouette_score
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
-from src.datasets.plot import SinDMap
 from src.utils.config_setup import create_dirs
 
 ROOT = os.getcwd()
@@ -69,28 +68,34 @@ class Clusters(object):
 
         return COLOR_PALETTE
 
-    def plot_clusters(self, clusters_df: pd.DataFrame, remove_noise=True):
-        COLOR_PALETTE = self.get_color_palette(np.max(clusters_df) + 1)
-        map_instance = SinDMap()
-        ax = map_instance.plot_areas(alpha=0.2)
-        ax.set_title("Pedestrian trajectories colored per cluster")
+    def plot_clusters(self, clusters_df: pd.DataFrame, remove_noise: bool = True):
+        """Plot (PCA-projected) vehicle trajectories coloured by HDBSCAN cluster."""
+        from sklearn.decomposition import PCA
+
+        COLOR_PALETTE = self.get_color_palette(np.max(clusters_df) + 2)
+        data = self.data_pooled  # (N, emb_dim)
+
+        pca = PCA(n_components=2)
+        coords = pca.fit_transform(data)  # (N, 2)
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.set_title("Vehicle embeddings coloured by HDBSCAN cluster")
+        ax.set_xlabel("PCA 1")
+        ax.set_ylabel("PCA 2")
 
         for cluster in np.unique(clusters_df):
-            if (remove_noise and cluster != -1) or True:  # -1 is not assigned clusters
-                cluster_df = self.df_target[clusters_df == cluster]
-                trajectories = {}
-                for index, row in cluster_df.iterrows():
-                    trajectories[index] = row.values.reshape(-1, 6)
+            if remove_noise and cluster == -1:
+                continue
+            mask = clusters_df == cluster
+            ax.scatter(
+                coords[mask, 0], coords[mask, 1],
+                c=[COLOR_PALETTE[cluster % len(COLOR_PALETTE)]],
+                label=f"Cluster {cluster}",
+                s=6, alpha=0.7,
+            )
 
-                map_instance.plot_dataset(
-                    pedestrian_data=trajectories,
-                    ax=ax,
-                    color=COLOR_PALETTE[cluster],
-                    title=f"Cluster {cluster}",
-                    alpha_trajectories=0.3,
-                    padding_masks=self.padding_masks,
-                )
-
+        ax.legend(title="Cluster", bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=7)
+        plt.tight_layout()
         plt.show()
 
 

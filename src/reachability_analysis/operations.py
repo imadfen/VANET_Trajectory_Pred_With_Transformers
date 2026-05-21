@@ -10,7 +10,6 @@ from shapely.geometry import Point, Polygon
 from matplotlib.patches import Polygon as poly
 from tqdm import tqdm
 
-from src.datasets.plot import SinDMap
 
 use_pydrake = False
 
@@ -188,7 +187,7 @@ def is_inside(z: pp.zonotope, point: np.ndarray) -> bool:
         V = optimize_vertices(z)
     else:
         V = pp.to_V(z)
-    _poly = Polygon(V).buffer(2 * np.finfo(float).eps)
+    _poly = Polygon(V).buffer(1e-5)
     return _poly.contains(Point(point))
 
 
@@ -302,7 +301,7 @@ def reduce(z: pp.zonotope, order: int):
 
 def visualize_zonotopes(
     z: Union[List[pp.zonotope], List[np.ndarray]],
-    map: Union[SinDMap, plt.Axes] = None,
+    map: plt.Axes = None,
     show: bool = False,
     scale_axes: bool = False,
     plot_vertices: bool = True,
@@ -311,27 +310,15 @@ def visualize_zonotopes(
     save_plot: str = None,
     title: str = "Zonotope visualization",
 ) -> plt.Axes:
-    """Visualize zonotopes
+    """Visualize zonotopes over an optional matplotlib Axes.
 
-    Parameters:
-    -----------
-    z : List[pp.zonotope] | List[np.ndarray]
-        The z-parameter contain all the zonotopes that is
-        going to be visualized OR a list of vertices for
-        all zonotopes that is to be plotted
-    map : SinDMap (default = None)
-        The map used for overlaying the zonotopes, if set
-        to None the map will not be showed and only the
-        zonotopes will be visible
-    show : bool (default = False)
-        Determines if the plot should be shown directly
-        after plotting of if user writes plt.show() in
-        script where function is used
+    Parameters
+    ----------
+    z      : list of zonotopes to render
+    map    : existing plt.Axes to draw on (None = create new)
+    show   : call plt.show() immediately
     """
-    if type(map) == SinDMap:
-        map_ax = map.plot_areas()
-    else:
-        map_ax = map
+    map_ax = map  # now simply a plt.Axes or None
 
     visualize(
         z,

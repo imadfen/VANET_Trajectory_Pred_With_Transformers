@@ -1,323 +1,250 @@
-from src.reachability_analysis.labeling_oracle import LabelingOracleSINDData, LABELS
-from src.clustering.run import run_clusters
-import pandas as pd
+"""
+Vehicle driving-behavior label utilities for Phase 2 cluster visualisation.
+
+Replaces the pedestrian SinD labeling oracle with vehicle intent labels
+mapped to the 4-class intent head: MaintainLane / Turn / Exit / Brake.
+"""
+
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
-import numpy as np
-import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
-from mpl_toolkits.mplot3d import Axes3D
-from matplotlib.colors import ListedColormap
 from sklearn.manifold import TSNE
+from matplotlib.colors import ListedColormap
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
-REVERSED_LABELS = {value: key for key, value in LABELS.items()}
+# ---------------------------------------------------------------------------
+# Vehicle intent labels — aligned with encoder intent_head output classes
+# ---------------------------------------------------------------------------
+VEHICLE_LABELS = {
+    0: "MaintainLane",
+    1: "Turn",
+    2: "Exit",
+    3: "Brake",
+}
+REVERSED_VEHICLE_LABELS = {v: k for k, v in VEHICLE_LABELS.items()}
+
+# 51 VANET feature names (indices 0=X, 1=Y, 2=Speed ...)
+VANET_FEATURE_NAMES = [
+    'X', 'Y', 'Speed', 'Acceleration', 'Heading', 'AngularVelocity',
+    'LaneID', 'LaneDist',
+    'Neigh1_Rx', 'Neigh1_Ry', 'Neigh1_RSpeed', 'Neigh1_RHeading',
+    'Neigh2_Rx', 'Neigh2_Ry', 'Neigh2_RSpeed', 'Neigh2_RHeading',
+    'Neigh3_Rx', 'Neigh3_Ry', 'Neigh3_RSpeed', 'Neigh3_RHeading',
+    'Neigh4_Rx', 'Neigh4_Ry', 'Neigh4_RSpeed', 'Neigh4_RHeading',
+    'Neigh5_Rx', 'Neigh5_Ry', 'Neigh5_RSpeed', 'Neigh5_RHeading',
+    'Neigh6_Rx', 'Neigh6_Ry', 'Neigh6_RSpeed', 'Neigh6_RHeading',
+    'Neigh7_Rx', 'Neigh7_Ry', 'Neigh7_RSpeed', 'Neigh7_RHeading',
+    'Neigh8_Rx', 'Neigh8_Ry', 'Neigh8_RSpeed', 'Neigh8_RHeading',
+    'Neigh9_Rx', 'Neigh9_Ry', 'Neigh9_RSpeed', 'Neigh9_RHeading',
+    'Neigh10_Rx', 'Neigh10_Ry', 'Neigh10_RSpeed', 'Neigh10_RHeading',
+    'AvgDistToSender', 'AvgMsgDelay', 'PacketLossRate',
+]
+
 COLORS = [
-    "#EF3D59",
-    "#E17A47",
-    "#EFC958",
-    "#4AB19D",
-    "#344E5C",
-    "#A6206A",
-    "#568EA6",
-    "#A2D4AB",
-    "#5A5050",
+    "#EF3D59", "#E17A47", "#EFC958", "#4AB19D",
+    "#344E5C", "#A6206A", "#568EA6", "#A2D4AB", "#5A5050",
 ]
 
 
-def get_color_palette(num_data):
+# ---------------------------------------------------------------------------
+# Colour palette helper
+# ---------------------------------------------------------------------------
+
+def get_color_palette(num_data: int):
     cmap = cm.get_cmap("hsv")
-    COLOR_PALETTE = [cmap(i / num_data) for i in range(num_data)]
+    return [cmap(i / max(num_data, 1)) for i in range(num_data)]
 
-    return COLOR_PALETTE
 
+# ---------------------------------------------------------------------------
+# Label assignment from intent logits
+# ---------------------------------------------------------------------------
+
+def assign_intent_labels(intent_logits: np.ndarray) -> np.ndarray:
+    """Convert (N, 4) intent logit array to (N,) hard label indices.
+
+    Parameters
+    ----------
+    intent_logits : np.ndarray  shape (N, 4)
+
+    Returns
+    -------
+    labels : np.ndarray  shape (N,)  values in {0,1,2,3}
+    """
+    return np.argmax(intent_logits, axis=1)
+
+
+# ---------------------------------------------------------------------------
+# Trajectory grouping by label
+# ---------------------------------------------------------------------------
 
 def label_trajectories(
-    data_original: np.array,
-    padding_masks: np.array,
-    clusters: pd.DataFrame,
-    labels: pd.DataFrame,
+    data_original: np.ndarray,   # (N, seq_len, 23)
+    padding_masks: np.ndarray,   # (N, seq_len)
+    clusters: np.ndarray,        # (N,)
+    labels: np.ndarray,          # (N,)
 ):
-    unique_labels = np.unique(labels)
-    trajectories = {label: {} for label in unique_labels}
-    padding_per_label = {label: {} for label in unique_labels}
-    clusters_per_label = {label: {} for label in unique_labels}
+    """Group trajectories by their intent label.
 
-    for label in unique_labels:
-        feature_df = data_original[labels == label]
-        padding_per_label[label] = padding_masks[labels == label]
-        clusters_per_label[label] = clusters[labels == label]
-        for i, (index, row) in enumerate(feature_df.iterrows()):
-            trajectories[label][i] = row.values.reshape(-1, 6)
+    Returns
+    -------
+    trajectories : dict  { label_id -> { i -> (seq_len, 23) array } }
+    padding_per_label : dict
+    clusters_per_label : dict
+    """
+    unique_labels = np.unique(labels)
+    trajectories = {lb: {} for lb in unique_labels}
+    padding_per_label = {lb: {} for lb in unique_labels}
+    clusters_per_label = {lb: {} for lb in unique_labels}
+
+    for lb in unique_labels:
+        mask = labels == lb
+        traj_group = data_original[mask]       # (M, seq_len, 23)
+        pad_group = padding_masks[mask]
+        clust_group = clusters[mask]
+        for i in range(len(traj_group)):
+            trajectories[lb][i] = traj_group[i]          # (seq_len, 23)
+            padding_per_label[lb][i] = pad_group[i]
+            clusters_per_label[lb][i] = clust_group[i]
 
     return trajectories, padding_per_label, clusters_per_label
 
 
+# ---------------------------------------------------------------------------
+# Trajectory plots (vehicle — no map overlay)
+# ---------------------------------------------------------------------------
+
 def plot_trajectories_per_label(
-    labeling_oracle, trajectories, padding_masked, COLOR_PALETTE=COLORS
+    trajectories: dict,
+    padding_masked: dict,
+    color_palette=COLORS,
 ):
-    for key, label in REVERSED_LABELS.items():
-        labeling_oracle.map.plot_dataset(
-            pedestrian_data=trajectories[key],
-            color=COLOR_PALETTE[key],
-            title=f"{label}",
-            alpha_trajectories=0.85,
-            size_points=5,
-            padding_masks=padding_masked[key],
-        )
+    """Plot X/Y trajectories grouped by vehicle intent label."""
+    for label_id, label_name in VEHICLE_LABELS.items():
+        if label_id not in trajectories:
+            continue
+        fig, ax = plt.subplots(figsize=(7, 5))
+        ax.set_title(f"Vehicle trajectories — {label_name}", fontweight="bold")
+        ax.set_xlabel("X (m)")
+        ax.set_ylabel("Y (m)")
+
+        color = color_palette[label_id % len(color_palette)]
+        for i, traj in trajectories[label_id].items():
+            mask = padding_masked[label_id].get(i)
+            data = traj[mask] if mask is not None else traj
+            x, y = data[:, 0], data[:, 1]
+            ax.plot(x, y, c=color, alpha=0.6, linewidth=0.8)
+            ax.scatter(x[0], y[0], c="green", s=8)
+            ax.scatter(x[-1], y[-1], c="red", s=8)
+
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
 
 
-def plot_trajectories_per_label_color_clusters(
-    labeling_oracle, trajectories, padding_masked, clusters, COLOR_PALETTE=COLORS
+def plot_trajectories_color_clusters(
+    trajectories: dict,
+    padding_masked: dict,
+    clusters_per_label: dict,
+    label_id: int = 0,
+    color_palette=None,
 ):
-    key = 3
-    labeling_oracle.map.plot_dataset_color_clusters(
-        pedestrian_data=trajectories[key],
-        colors=COLOR_PALETTE,
-        clusters=clusters[key],
-        title=f"{REVERSED_LABELS[key]}",
-        alpha_trajectories=0.9,
-        size_points=0,
-        padding_masks=padding_masked[key],
-    )
+    """Plot one label group, colouring each trajectory by its HDBSCAN cluster."""
+    if color_palette is None:
+        all_clusters = np.concatenate([
+            np.array(list(c.values())) for c in clusters_per_label.values()
+        ])
+        color_palette = get_color_palette(int(all_clusters.max()) + 2)
 
+    label_name = VEHICLE_LABELS.get(label_id, str(label_id))
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.set_title(f"Cluster colours — {label_name}", fontweight="bold")
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Y (m)")
+    used = set()
 
-# Plotting Radar Chart
-def plot_radar_chart(ax, values, categories, title, color):
-    N = len(categories)
-    angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
-    values = values.tolist() + values.tolist()[:1]
-    angles += angles[:1]
+    for i, traj in trajectories.get(label_id, {}).items():
+        mask = padding_masked[label_id].get(i)
+        data = traj[mask] if mask is not None else traj
+        x, y = data[:, 0], data[:, 1]
+        c_id = int(clusters_per_label[label_id].get(i, 0))
+        lbl = f"Cluster {c_id}"
+        if lbl not in used:
+            ax.plot(x, y, c=color_palette[c_id % len(color_palette)], alpha=0.85, label=lbl)
+            used.add(lbl)
+        else:
+            ax.plot(x, y, c=color_palette[c_id % len(color_palette)], alpha=0.85)
+        ax.scatter(x[0], y[0], c="green", s=5)
+        ax.scatter(x[-1], y[-1], c="red", s=5)
 
-    ax.set_theta_offset(np.pi / 2)
-    ax.set_theta_direction(-1)
-    ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(categories)
-
-    ax.plot(angles, values, color=color, linewidth=1, linestyle="solid", label=title)
-    ax.fill(angles, values, color=color, alpha=0.25)
-    ax.set_title(title, size=22, color="red", y=1.1)
-
-
-def plot_clusters_distribution_per_label(
-    labels, data_original, clusters, COLOR_PALETTE=COLORS
-):
-    data_pool_original = pd.DataFrame(
-        np.mean(data_original, axis=1), columns=["x", "y", "vx", "vy", "ax", "ay"]
-    )
-    clusters_df_ = pd.DataFrame(clusters, columns=["cluster"])
-    labels_df = pd.DataFrame(labels, columns=["label"])
-    labels_df["label"] = labels_df["label"].map(REVERSED_LABELS)
-
-    cluster_features = pd.concat([labels_df, clusters_df_, data_pool_original], axis=1)
-    category_counts = (
-        cluster_features.groupby(["cluster", "label"]).size().unstack(fill_value=0)
-    )
-    category_proportions = category_counts.div(category_counts.sum(axis=1), axis=0)
-
-    num_clusters = len(category_proportions)
-    cols = min(7, num_clusters)
-    rows = (num_clusters + cols - 1) // cols
-    fig, axs = plt.subplots(
-        figsize=(cols * 5, rows * 5),
-        nrows=rows,
-        ncols=cols,
-        subplot_kw=dict(polar=True),
-    )
-    plt.rcParams.update({"font.size": 16})
-    axs = axs.flatten() if isinstance(axs, np.ndarray) else [axs]
-
-    # Plot each cluster's radar chart
-    for i, (idx, row) in enumerate(category_proportions.iterrows()):
-        plot_radar_chart(
-            axs[i], row, row.index, f"Cluster {idx}", color=COLOR_PALETTE[i]
-        )
-
-    # Hide unused axes
-    for j in range(i + 1, len(axs)):
-        axs[j].set_visible(False)
-
+    ax.legend(title="Cluster", bbox_to_anchor=(1.02, 1), loc="upper left")
+    plt.grid(True)
     plt.tight_layout()
     plt.show()
 
 
-def plot_dual_tsne_3d(data_cluster1, data_cluster2, n_components=3, figsize=(14, 6)):
-    """
-    Applies t-SNE and plots the results in 3D for two datasets side by side.
+# ---------------------------------------------------------------------------
+# Dimensionality reduction plots (reusable — geometry-agnostic)
+# ---------------------------------------------------------------------------
 
-    :param data1: First dataset (original data, their clusters)
-    :param data2: Second dataset (embeddings, their clusters)
-    :param clusters: Cluster labels for each sample
-    :param n_components: Number of PCA components to compute
-    :param figsize: Size of the figure for plotting
-    """
-
+def plot_dual_tsne_3d(data_cluster1, data_cluster2, figsize=(14, 6)):
     data1, clusters1 = data_cluster1
     data2, clusters2 = data_cluster2
-    if len(data1.shape) > 2:
+    if data1.ndim > 2:
         data1 = data1.reshape(data1.shape[0], -1)
-    if len(data2.shape) > 2:
+    if data2.ndim > 2:
         data2 = data2.reshape(data2.shape[0], -1)
-    # Initialize PCA and reduce dimensions
-    tsne = TSNE(
-        n_components=3, perplexity=30, learning_rate=200, n_iter=1000, random_state=42
-    )
-    data1_transformed = tsne.fit_transform(data1)
-    data2_transformed = tsne.fit_transform(data2)
 
-    # Prepare the plot
-    fig = plt.figure(figsize=figsize)
+    tsne = TSNE(n_components=3, perplexity=30, learning_rate=200, n_iter=1000, random_state=42)
+    d1t = tsne.fit_transform(data1)
+    d2t = tsne.fit_transform(data2)
+
     COLOR_PALETTE = get_color_palette(max(len(set(clusters1)), len(set(clusters2))))
+    fig = plt.figure(figsize=figsize)
 
-    # Plotting for the first dataset
     ax1 = fig.add_subplot(121, projection="3d")
-    scatter1 = ax1.scatter(
-        data1_transformed[:, 0],
-        data1_transformed[:, 1],
-        data1_transformed[:, 2],
-        c=clusters1,
-        cmap=ListedColormap(COLOR_PALETTE),
-        edgecolor="k",
-    )
-    legend1 = ax1.legend(
-        *scatter1.legend_elements(), loc="upper right", title="Clusters"
-    )
-    ax1.add_artist(legend1)
+    sc1 = ax1.scatter(d1t[:, 0], d1t[:, 1], d1t[:, 2], c=clusters1,
+                      cmap=ListedColormap(COLOR_PALETTE), edgecolor="k")
+    ax1.legend(*sc1.legend_elements(), loc="upper right", title="Clusters")
     ax1.set_title("t-SNE of Original Data")
 
-    # Plotting for the second dataset
     ax2 = fig.add_subplot(122, projection="3d")
-    scatter2 = ax2.scatter(
-        data2_transformed[:, 0],
-        data2_transformed[:, 1],
-        data2_transformed[:, 2],
-        c=clusters2,
-        cmap=ListedColormap(COLOR_PALETTE),
-        edgecolor="k",
-    )
-    legend2 = ax2.legend(
-        *scatter2.legend_elements(), loc="upper right", title="Clusters"
-    )
-    ax2.add_artist(legend2)
+    sc2 = ax2.scatter(d2t[:, 0], d2t[:, 1], d2t[:, 2], c=clusters2,
+                      cmap=ListedColormap(COLOR_PALETTE), edgecolor="k")
+    ax2.legend(*sc2.legend_elements(), loc="upper right", title="Clusters")
     ax2.set_title("t-SNE of Embeddings")
 
-    # Display the plot
     plt.tight_layout()
     plt.show()
 
 
-def plot_dual_pca_3d(
-    data_cluster1,
-    data_cluster2,
-    n_components=3,
-    figsize=(14, 6),
-    file: str = "pca_plot",
-):
-    """
-    Applies PCA and plots the results in 3D for two datasets side by side.
-
-    :param data1: First dataset (original data, their clusters)
-    :param data2: Second dataset (embeddings, their clusters)
-    :param clusters: Cluster labels for each sample
-    :param n_components: Number of PCA components to compute
-    :param figsize: Size of the figure for plotting
-    """
-
+def plot_dual_pca_3d(data_cluster1, data_cluster2, n_components=3,
+                     figsize=(14, 6), file: str = "pca_plot"):
     data1, clusters1 = data_cluster1
     data2, clusters2 = data_cluster2
-    if len(data1.shape) > 2:
+    if data1.ndim > 2:
         data1 = data1.reshape(data1.shape[0], -1)
-    if len(data2.shape) > 2:
+    if data2.ndim > 2:
         data2 = data2.reshape(data2.shape[0], -1)
-    # Initialize PCA and reduce dimensions
+
     pca = PCA(n_components=n_components)
-    data1_transformed = pca.fit_transform(data1)
-    data2_transformed = pca.fit_transform(data2)
+    d1t = pca.fit_transform(data1)
+    d2t = pca.fit_transform(data2)
 
-    # Prepare the plot
-    fig = plt.figure(figsize=figsize)
     COLOR_PALETTE = get_color_palette(max(len(set(clusters1)), len(set(clusters2))))
+    fig = plt.figure(figsize=figsize)
 
-    # Plotting for the first dataset
     ax1 = fig.add_subplot(121, projection="3d")
-    scatter1 = ax1.scatter(
-        data1_transformed[:, 0],
-        data1_transformed[:, 1],
-        data1_transformed[:, 2],
-        c=clusters1,
-        cmap=ListedColormap(COLOR_PALETTE),
-        edgecolor="k",
-    )
-    # legend1 = ax1.legend(*scatter1.legend_elements(), loc='upper right', title="Clusters")
-    # ax1.add_artist(legend1)
+    ax1.scatter(d1t[:, 0], d1t[:, 1], d1t[:, 2], c=clusters1,
+                cmap=ListedColormap(COLOR_PALETTE), edgecolor="k")
     ax1.set_title("PCA of Original Data", fontweight="bold", fontsize=14)
 
-    # Plotting for the second dataset
     ax2 = fig.add_subplot(122, projection="3d")
-    scatter2 = ax2.scatter(
-        data2_transformed[:, 0],
-        data2_transformed[:, 1],
-        data2_transformed[:, 2],
-        c=clusters2,
-        cmap=ListedColormap(COLOR_PALETTE),
-        edgecolor="k",
-    )
-    # legend2 = ax2.legend(*scatter2.legend_elements(), loc='upper right', title="Clusters")
-    # ax2.add_artist(legend2)
+    ax2.scatter(d2t[:, 0], d2t[:, 1], d2t[:, 2], c=clusters2,
+                cmap=ListedColormap(COLOR_PALETTE), edgecolor="k")
     ax2.set_title("PCA of Embeddings", fontweight="bold", fontsize=14)
+
     plt.subplots_adjust(wspace=0)
-    # Display the plot
-    # plt.tight_layout()
     plt.savefig(f"{file}.png", dpi=300, bbox_inches="tight")
     plt.show()
-
-
-def run_labels(
-    config: dict,
-    remove_noise: bool = True,
-    show_clusters: bool = False,
-    show_labels: bool = False,
-    show_labeled_clusters: bool = True,
-):
-    clusters, embeddings, target, padding_masks = run_clusters(
-        config, load_embeddings=True, load_clusters=True, show_clusters=show_clusters
-    )
-    COLOR_PALETTE = get_color_palette(len(set(clusters)))
-
-    labeling_oracle = LabelingOracleSINDData(config)
-    labeling_oracle.load_data()
-    labels = labeling_oracle.labels(target, save_data=False)
-    # Flatten the sequence_length and features dimensions
-    df_target = pd.DataFrame(
-        target.reshape(target.shape[0], -1)
-    )  # flatten data merge first two dimensions
-
-    if remove_noise:
-        df_target = df_target[clusters != -1]
-        labels = labels[clusters != -1]
-        padding_masks = padding_masks[clusters != -1]
-        clusters = clusters[clusters != -1]
-
-    trajectories, padding_per_label, clusters_per_label = label_trajectories(
-        df_target, padding_masks, clusters, labels
-    )
-    if show_labels:
-        plot_trajectories_per_label(
-            labeling_oracle=labeling_oracle,
-            trajectories=trajectories,
-            padding_masked=padding_per_label,
-        )
-    if show_labeled_clusters:
-        plot_trajectories_per_label_color_clusters(
-            labeling_oracle,
-            trajectories=trajectories,
-            padding_masked=padding_per_label,
-            clusters=clusters_per_label,
-            COLOR_PALETTE=COLOR_PALETTE,
-        )
-        plot_clusters_distribution_per_label(
-            labels=labels,
-            data_original=target,
-            clusters=clusters,
-            COLOR_PALETTE=COLOR_PALETTE,
-        )

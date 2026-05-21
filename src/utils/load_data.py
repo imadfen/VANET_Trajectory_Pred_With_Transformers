@@ -54,6 +54,18 @@ def load_data(config, logger, save_data=True):
     logger.info("{} samples may be used for training".format(len(train_indices)))
     logger.info("{} samples will be used for validation".format(len(val_indices)))
     logger.info("{} samples will be used for testing".format(len(test_indices)))
+
+    # ── Memory guard: sub-sample for eval/clustering if requested ───────────
+    eval_subset = config.get("eval_subset")
+    if eval_subset is not None and eval_subset < len(val_indices):
+        import random
+        rng = random.Random(config.get("seed", 1337))
+        val_indices = rng.sample(list(val_indices), eval_subset)
+        logger.info(
+            f"eval_subset={eval_subset}: sub-sampled val_indices to {len(val_indices)} chunks "
+            f"(RAM ~{eval_subset * 60 * 51 * 4 / 1e9:.2f} GB)"
+        )
+
     save_indices(
         indices={"train": train_indices, "val": val_indices, "test": test_indices},
         folder=config["output_dir"],
@@ -76,40 +88,45 @@ def load_data(config, logger, save_data=True):
             os.path.join(config["output_dir"], "original_data.pt")
         )
         torch.save({"val_data": val_data}, outputs_filepath)
+        
+# Pre-process features
+if config["data_normalization"] != "none":
+    logger.info("Normalizing data ...")
+    import numpy as np
+    if hasattr(my_data, "all_chunks"):
+        # Compute constants strictly on training data to prevent data leakage
+        train_data_stack = np.concatenate([my_data.all_chunks[i] for i in train_indices], axis=0)
 
-    # Pre-process features
-    if config["data_normalization"] != "none":
-        logger.info("Normalizing data ...")
-        import numpy as np
-        if hasattr(my_data, "all_chunks"):
-            # Compute constants strictly on training data to prevent data leakage
-            train_data_stack = np.concatenate([my_data.all_chunks[i] for i in train_indices], axis=0)
-            if config["data_normalization"] in ["standardization", "per_sample_std"]:
-                mean = np.mean(train_data_stack, axis=0)
-                std = np.std(train_data_stack, axis=0)
-                my_data.mean = mean
-                my_data.std = std
-                my_data.norm_type = config["data_normalization"]
-                for i in range(len(my_data.all_chunks)):
-                    my_data.all_chunks[i] = (my_data.all_chunks[i] - mean) / (std + 1e-8)
-            elif config["data_normalization"] in ["minmax", "per_sample_minmax"]:
-                min_val = np.min(train_data_stack, axis=0)
-                max_val = np.max(train_data_stack, axis=0)
-                my_data.min_val = min_val
-                my_data.max_val = max_val
-                my_data.norm_type = config["data_normalization"]
-                for i in range(len(my_data.all_chunks)):
-                    my_data.all_chunks[i] = (my_data.all_chunks[i] - min_val) / (max_val - min_val + 1e-8)
-        else:
-            normalizer = Normalizer(config["data_normalization"])
-            my_data.normalizer = normalizer
-            if len(train_indices):
-                train_data = normalizer.normalize(train_data)
-            if len(val_indices):
-                val_data = normalizer.normalize(val_data)
-            if len(test_indices):
-                test_data = normalizer.normalize(test_data)
+        if config["data_normalization"] in ["standardization", "per_sample_std"]:
+            mean = np.mean(train_data_stack, axis=0)
+            std  = np.std(train_data_stack, axis=0)
+            my_data.mean      = mean
+            my_data.std       = std
+            my_data.norm_type = config["data_normalization"]
+            for i in range(len(my_data.all_chunks)):
+                my_data.all_chunks[i] = (my_data.all_chunks[i] - mean) / (std + 1e-8)
 
+        elif config["data_normalization"] in ["minmax", "per_sample_minmax"]:
+            min_val = np.min(train_data_stack, axis=0)
+            max_val = np.max(train_data_stack, axis=0)
+            my_data.min_val   = min_val
+            my_data.max_val   = max_val
+            my_data.norm_type = config["data_normalization"]
+            for i in range(len(my_data.all_chunks)):
+                my_data.all_chunks[i] = (
+                    my_data.all_chunks[i].astype(np.float32) - min_val
+                ) / ((max_val - min_val) + 1e-8)
+
+    else:
+        normalizer = Normalizer(config["data_normalization"])
+        my_data.normalizer = normalizer
+        if len(train_indices):
+            train_data = normalizer.normalize(train_data)
+        if len(val_indices):
+            val_data = normalizer.normalize(val_data)
+        if len(test_indices):
+            test_data = normalizer.normalize(test_data)
+            
     # Initialize data generators
     task_dataset_class, collate_fn = load_task_datasets(config)
 
@@ -120,7 +137,7 @@ def load_data(config, logger, save_data=True):
         batch_size=config["batch_size"],
         shuffle=False,
         num_workers=config["num_workers"],
-        pin_memory=True,
+        pin_memory=False,
         collate_fn=lambda x: collate_fn(x, max_len=my_data.max_seq_len),
     )
 

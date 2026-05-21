@@ -1,250 +1,178 @@
+"""
+Phase 2 — VANET Behavior Clustering Pipeline
+
+Orchestrates: load model → extract embeddings → HDBSCAN cluster → save AnnoyModel index.
+
+Usage (from project root):
+    python -m src.clustering.run \
+        --folder experiments \
+        --model_file VANETDataset_pretrained_2026-XX-XX_XX-XX-XX_XXX \
+        --save_embeddings
+"""
+
 import torch
-import pandas as pd
 import numpy as np
 import argparse
-
 import os
 import sys
+import json
+import logging
 
-# Get the absolute path of the directory two levels up
 project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-
-# Add that directory to sys.path
 sys.path.append(project_dir)
-
 
 from main import run as run_transformer
 from src.utils.config_setup import create_dirs
-from src.datasets.data import Normalizer
-from src.datasets.plot import SinDMap
 from src.clustering.Clusters import HDBSCANCluster
 from src.clustering.NearestNeighbor import AnnoyModel
-from src.reachability_analysis.labeling_oracle import LabelingOracleSINDData
-
 from src.utils.load_data import load_task_datasets
 from src.transformer_model.model import create_model, evaluate
 from torch.utils.data import DataLoader
-
-import logging
-import json
-
-ROOT = os.getcwd()
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s : %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
+ROOT = os.getcwd()
 
-def load_data(config: dict):
-    # Load the data
-    pt_file = torch.load(f"{config['output_dir']}/output_data.pt")
-    all_data_original, _ = get_original_data(config)
-
-    all_data = np.concatenate(pt_file["targets"], axis=0)
-    all_embeddings = np.concatenate(pt_file["embeddings"], axis=0)
-    all_embeddings_original = np.concatenate(pt_file["embeddings_original"], axis=0)
-    all_predictions = np.concatenate(pt_file["predictions"], axis=0)
-
-    padding_masks = np.concatenate(pt_file["padding_masks"], axis=0)
-    target_masks = np.concatenate(pt_file["target_masks"], axis=0)
-
-    return (
-        all_data_original,
-        all_data,
-        all_embeddings,
-        all_embeddings_original,
-        all_predictions,
-        padding_masks,
-        target_masks,
-    )
+# 51 VANET features matching SINDData.feature_names
+VANET_FEATURE_NAMES = [
+    'X', 'Y', 'Speed', 'Acceleration', 'Heading', 'AngularVelocity',
+    'LaneID', 'LaneDist',
+    'Neigh1_Rx', 'Neigh1_Ry', 'Neigh1_RSpeed', 'Neigh1_RHeading',
+    'Neigh2_Rx', 'Neigh2_Ry', 'Neigh2_RSpeed', 'Neigh2_RHeading',
+    'Neigh3_Rx', 'Neigh3_Ry', 'Neigh3_RSpeed', 'Neigh3_RHeading',
+    'Neigh4_Rx', 'Neigh4_Ry', 'Neigh4_RSpeed', 'Neigh4_RHeading',
+    'Neigh5_Rx', 'Neigh5_Ry', 'Neigh5_RSpeed', 'Neigh5_RHeading',
+    'Neigh6_Rx', 'Neigh6_Ry', 'Neigh6_RSpeed', 'Neigh6_RHeading',
+    'Neigh7_Rx', 'Neigh7_Ry', 'Neigh7_RSpeed', 'Neigh7_RHeading',
+    'Neigh8_Rx', 'Neigh8_Ry', 'Neigh8_RSpeed', 'Neigh8_RHeading',
+    'Neigh9_Rx', 'Neigh9_Ry', 'Neigh9_RSpeed', 'Neigh9_RHeading',
+    'Neigh10_Rx', 'Neigh10_Ry', 'Neigh10_RSpeed', 'Neigh10_RHeading',
+    'AvgDistToSender', 'AvgMsgDelay', 'PacketLossRate',
+]
 
 
-def get_original_data(config: dict):
-    """
-    Load the original data when the data are normalized
-    """
-    original_pt_file = torch.load(
-        f"{config['output_dir']}/original_data.pt"
-    )  # chunk 50, batch size 16, with original data
-    chunk_size = config["data_chunk_len"]
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
 
-    result = []
-    feature_names = ["x", "y", "vx", "vy", "ax", "ay"]
-    padding_indicators = []
+def load_embeddings_from_pt(output_dir: str):
+    """Load the per_batch tensors saved by the val evaluator."""
+    # load from .pt originally
+    pt_file = torch.load(os.path.join(output_dir, "output_data.pt"), map_location="cpu")
 
-    for key, group in original_pt_file["val_data"].groupby("data_chunk_len"):
-        # For each group, convert it into a 2D list (where each sublist is a row in the group)
-        chunks = group[feature_names].to_numpy()
-        pad_length = chunk_size - chunks.shape[0]
-        padded_chunks = np.pad(
-            chunks,
-            ((0, pad_length), (0, 0)),
-            mode="constant",
-            constant_values=0,
-        )
+    def to_numpy(t):
+        return t.numpy() if hasattr(t, "numpy") else t
 
-        # Create an indicator array for padding
-        # 0s for original data, 1s for padded data
-        indicator_arr = np.zeros(
-            (chunks.shape[0], 1), dtype=int
-        )  # Initialize with zeros, indicating original data
+    all_embeddings = to_numpy(pt_file.pop("embeddings"))
+    all_predictions = to_numpy(pt_file.pop("predictions"))
+    all_targets = to_numpy(pt_file.pop("targets"))
+    padding_masks = to_numpy(pt_file.pop("padding_masks"))
+    target_masks = to_numpy(pt_file.pop("target_masks"))
 
-        if pad_length > 0:
-            # Create padding indicators (1s) and append to the original indicator array
-            padding_indicator = np.ones((pad_length, 1), dtype=int)
-            indicator_arr = np.vstack((indicator_arr, padding_indicator))
+    # intent_logits may not be saved in older runs
+    intent_logits = None
+    if "intent_logits" in pt_file:
+        intent_logits = to_numpy(pt_file.pop("intent_logits"))
+        
+    del pt_file
 
-        padding_indicators.append(indicator_arr[:, 0])
-        result.append(padded_chunks)
-
-    return np.array(result), np.array(padding_indicators)
-
-
-def plot_data(padding_masks, all_data_original, all_data, all_predictions, config):
-    map = SinDMap()
-    batch_id = padding_masks.shape[0] - 1
-
-    # orginal data (before normalization, if applied
-    print("Original data before normalization (if applicable)")
-    map.plot_single_data(
-        pedestrian_data={
-            batch_id: pd.DataFrame(
-                all_data_original[batch_id], columns=["x", "y", "vx", "vy", "ax", "ay"]
-            )
-        },
-        padding_masks=padding_masks,
-    )
-
-    # target data (after normalization, if applied)
-    print("Target data after normalization (if applicable)")
-    if config["data_normalization"] != "none":
-        normalizer = Normalizer(norm_type=config["data_normalization"])
-        normalized_df = normalizer.normalize(all_data_original)
-        map.plot_single_data(
-            pedestrian_data={
-                batch_id: pd.DataFrame(
-                    normalized_df[batch_id], columns=["x", "y", "vx", "vy", "ax", "ay"]
-                )
-            },
-            padding_masks=padding_masks,
-        )
-    map.plot_single_data(
-        pedestrian_data={
-            batch_id: pd.DataFrame(
-                all_data[batch_id], columns=["x", "y", "vx", "vy", "ax", "ay"]
-            )
-        },
-        padding_masks=padding_masks,
-    )
-
-    # predicted data before
-    print("Predicted data normalized (if applicable) vs unnormalized data")
-    if config["data_normalization"] != "none":
-        original_df = normalizer.inverse_normalize(all_predictions)
-        map.plot_single_data(
-            pedestrian_data={
-                batch_id: pd.DataFrame(
-                    original_df[batch_id], columns=["x", "y", "vx", "vy", "ax", "ay"]
-                )
-            },
-            padding_masks=~padding_masks,
-        )
-
-    map.plot_single_data(
-        pedestrian_data={
-            batch_id: pd.DataFrame(
-                all_predictions[batch_id], columns=["x", "y", "vx", "vy", "ax", "ay"]
-            )
-        }
-    )
+    return all_targets, all_embeddings, all_predictions, padding_masks, target_masks, intent_logits
 
 
 def load_config(
-    folder="experiments",
-    model_file="SINDDataset_pretrained_2024-04-27_00-11-45_KIP",
-    index=2,
-    index_data=0,
-    original_data=False,
-):
-
-    with open(f"{folder}/{model_file}/configuration.json") as f:
+    folder: str = "experiments",
+    model_file: str = "VANETDataset_pretrained",
+    index: int = 2,
+    index_data: int = 0,
+    original_data: bool = False,
+    eval_subset: int = None,
+) -> dict:
+    config_path = os.path.join(folder, model_file, "configuration.json")
+    with open(config_path) as f:
         config = json.load(f)
-        config["save_dir"] = (
-            ROOT + f"/{folder}/" + config["save_dir"].split("/", index)[-1]
-        )
-        config["output_dir"] = (
-            ROOT + f"/{folder}/" + config["output_dir"].split("/", index)[-1] + "/eval"
-        )
-        config["tensorboard_dir"] = (
-            ROOT
-            + f"/{folder}/"
-            + config["tensorboard_dir"].split("/", index)[-1]
-            + "/eval"
-        )
-        config["data_dir"] = ROOT + "/" + config["data_dir"].split("/", index_data)[-1]
-        config["load_model"] = config["save_dir"] + "/model_best.pth"
-        config["eval_only"] = True
-        config["save_embeddings"] = True
-        config["val_ratio"] = 1.0
-        config["dropout"] = 0.0  # No dropout during evaluation
-        config["hyperparameter_tuning"] = False
+
+    config["save_dir"] = ROOT + f"/{folder}/" + config["save_dir"].split("/", index)[-1]
+    config["output_dir"] = (
+        ROOT + f"/{folder}/" + config["output_dir"].split("/", index)[-1] + "/eval"
+    )
+    config["tensorboard_dir"] = (
+        ROOT + f"/{folder}/" + config["tensorboard_dir"].split("/", index)[-1] + "/eval"
+    )
+    config["data_dir"] = ROOT + "/" + config["data_dir"].split("/", index_data)[-1]
+    config["load_model"] = os.path.join(config["save_dir"], "model_best.pth")
+    config["eval_only"] = True
+    config["save_embeddings"] = True
+    config["val_ratio"] = 1.0
+    config["dropout"] = 0.0
+    config["hyperparameter_tuning"] = False
+    config["eval_subset"] = eval_subset   # None = use all chunks
+    config["original_data"] = original_data
 
     create_dirs([config["output_dir"]])
-    config["original_data"] = original_data
-    config["remove_noise"] = True
-
     return config
 
 
-def get_embedding(config: dict, data_oracle: LabelingOracleSINDData):
-    # Initialize data generators
+# ---------------------------------------------------------------------------
+# Nearest-neighbor cluster lookup (used by Phase 3 / simulation)
+# ---------------------------------------------------------------------------
+
+def get_embedding(config: dict, data_chunks: np.ndarray, chunk_indices: list):
+    """Extract embeddings from the pre-trained encoder for a set of chunks.
+
+    Returns the embedding array of shape (N, embedding_dim).
+    """
+    from src.datasets.masked_datasets import ImputationDataset, collate_unsuperv
+    from functools import partial
+
+    class _TmpData:
+        """Minimal wrapper so ImputationDataset can address all_chunks."""
+        def __init__(self, chunks):
+            self.all_chunks = chunks
+
     task_dataset_class, collate_fn = load_task_datasets(config)
 
-    # Dataloaders
-    val_dataset = task_dataset_class(
-        data_oracle.feature_df, data_oracle.all_IDs
-    )
-
-    val_loader = DataLoader(
-        dataset=val_dataset,
+    tmp_data = _TmpData(data_chunks)
+    dataset = task_dataset_class(tmp_data, chunk_indices)
+    loader = DataLoader(
+        dataset=dataset,
         batch_size=config["batch_size"],
         shuffle=False,
-        num_workers=config["num_workers"],
-        pin_memory=True,
-        collate_fn=lambda x: collate_fn(x, max_len=data_oracle.max_seq_len),
-    )
-    #  Create model, optimizer, and evaluators
-    model, optimizer, trainer, val_evaluator, start_epoch = create_model(
-        config, None, val_loader, data_oracle, logger, device="cpu"
+        num_workers=config.get("num_workers", 0),
+        pin_memory=False,
+        collate_fn=lambda x: collate_fn(x, max_len=config["data_chunk_len"]),
     )
 
-    # Perform the evaluation
-    aggr_metrics, embedding_data = evaluate(
-        val_evaluator, config=config, save_embeddings=True, save_data=False
-    )
+    model, _, _, val_evaluator, _ = create_model(config, None, loader, tmp_data, logger, device="cpu")
 
-    return embedding_data
+    _, embedding_data = evaluate(val_evaluator, config=config, save_embeddings=True, save_data=False)
+    embeddings = embedding_data["embeddings"][0].copy()
+    del embedding_data
+    return embeddings
 
 
-def get_cluster(config: dict, data_oracle: LabelingOracleSINDData, chunk:int = 0):
+def get_cluster(config: dict, embedding: np.ndarray):
+    """Return the nearest cluster ID and distance for a single embedding vector.
+
+    Parameters
+    ----------
+    config : dict  – must contain 'output_dir' pointing to where AnnoyModel was saved
+    embedding : np.ndarray  – shape (embedding_dim,)
+
+    Returns
+    -------
+    cluster_id : int
+    distance : float
     """
-    config: dict - configuration dictionary that includes the model and data paths of the training data
-    data_oracle: LabelingOracleSINDData - data oracle that includes the data pth for testing trajectory
-    """
-    if not data_oracle.config["original_data"]:
-        transformed_data = get_embedding(config, data_oracle)
-        data = transformed_data["embeddings"][0]
-    else:
-        data = data_oracle.create_chunks(save_data=False)[0]
+    nn_model = AnnoyModel(config=config)
+    return nn_model.get(embedding)
 
-    if data.ndim == 3:
-        print(f"Trajectory data shape need to be of shape  (n, m). Get {chunk} dimension as past trajectory")
-        data = data[chunk]
 
-    nn_model = AnnoyModel(config=data_oracle.config)
-    return nn_model.get(data)
-
+# ---------------------------------------------------------------------------
+# Main clustering pipeline
+# ---------------------------------------------------------------------------
 
 def run_clusters(
     config: dict = None,
@@ -254,109 +182,81 @@ def run_clusters(
     min_samples: int = 30,
     save_data: bool = True,
     show_clusters: bool = True,
-    plot_data: bool = False,
 ):
+    """Full Phase 2 pipeline.
 
+    1. If not load_embeddings: re-runs the Transformer in eval mode to extract them.
+    2. Loads embeddings + targets from output_data.pt.
+    3. Runs (or loads) HDBSCAN.
+    4. Builds and saves the AnnoyModel nearest-neighbour index.
+    """
     if not load_embeddings:
         run_transformer(config)
+
     (
-        all_data_original,
-        all_data,
+        all_targets,
         all_embeddings,
-        all_embeddings_original,
         all_predictions,
         padding_masks,
         target_masks,
-    ) = load_data(config)
+        intent_logits,
+    ) = load_embeddings_from_pt(config["output_dir"])
 
-    print(all_data_original.shape, all_data.shape, all_embeddings.shape, all_embeddings_original.shape, all_predictions.shape, padding_masks.shape)
-
-    if plot_data:
-        plot_data(padding_masks, all_data_original, all_data, all_predictions, config)
+    logger.info(
+        f"Loaded embeddings: {all_embeddings.shape}, targets: {all_targets.shape}"
+    )
+    
+    # Free what clustering doesn't need
+    del all_predictions, target_masks, intent_logits
 
     cluster_instance = HDBSCANCluster(
         embeddings=all_embeddings,
-        target=all_data_original,
+        target=all_targets,
         padding_masks=padding_masks,
         min_cluster_size=min_cluster_size,
         min_samples=min_samples,
         config=config,
     )
 
-    # Clustering
     if not load_clusters:
-        cluster_instance = HDBSCANCluster(
-            embeddings=all_embeddings,
-            target=all_data_original,
-            padding_masks=padding_masks,
-            min_cluster_size=min_cluster_size,
-            min_samples=min_samples,
-            config=config,
-        )
         cluster_instance.run(
-            original_data=config["original_data"],
-            remove_noise=config["remove_noise"],
+            original_data=False,
+            remove_noise=True,
             save_data=save_data,
             show_clusters=show_clusters,
         )
-
-        # Build and Save Neirest Neighbor Model
+        # Build and save the Annoy nearest-neighbour index over cluster centroids
         nn_model = AnnoyModel(config=config)
         nn_model.build()
     else:
-        cluster_instance = HDBSCANCluster(
-            embeddings=all_embeddings,
-            target=all_data_original,
-            padding_masks=padding_masks,
-            min_cluster_size=min_cluster_size,
-            min_samples=min_samples,
-            config=config,
-        )
-        data = cluster_instance.load_clusters(
-            original_data=config["original_data"], remove_noise=config["remove_noise"]
-        )
-
+        data = cluster_instance.load_clusters(original_data=False, remove_noise=True)
         return data
 
 
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run VANET behavior clustering (Phase 2).")
+    parser.add_argument("--folder", type=str, default="experiments",
+                        help="Experiments folder containing trained models.")
+    parser.add_argument("--model_file", type=str, default="VANETDataset_pretrained",
+                        help="Experiment sub-folder name (model to cluster).")
+    parser.add_argument("--index", type=int, default=2,
+                        help="Path split index for save_dir.")
+    parser.add_argument("--index_data", type=int, default=0,
+                        help="Path split index for data_dir.")
+    parser.add_argument("--load_embeddings", action="store_true",
+                        help="Load pre-extracted embeddings instead of re-running the encoder.")
+    parser.add_argument("--load_clusters", action="store_true",
+                        help="Load pre-computed HDBSCAN clusters.")
+    parser.add_argument("--min_cluster_size", type=int, default=5)
+    parser.add_argument("--min_samples", type=int, default=30)
+    parser.add_argument("--eval_subset", type=int, default=None,
+                        help="Randomly sample this many chunks for eval/clustering "
+                             "to reduce RAM usage (e.g. 50000). Default: use all chunks.")
 
-    # Set up argument parsing
-    parser = argparse.ArgumentParser(
-        description="Run clustering script with arguments."
-    )
-    parser.add_argument(
-        "--folder",
-        type=str,
-        default="experiments",
-        help="Folder that includes the trained models.",
-    )
-    parser.add_argument(
-        "--model_file",
-        type=str,
-        default="SINDDataset_pretrained_2024-04-27_00-11-45_KIP",
-        help="The model to create clusters for.",
-    )
-    parser.add_argument(
-        "--index",
-        type=int,
-        default=2,
-        help="The index number, which indicates the right path to the models' folder.",
-    )
-    parser.add_argument(
-        "--index_data",
-        type=int,
-        default=0,
-        help="The index number, which indicates the right path to the data folder.",
-    )
-    parser.add_argument(
-        "--original_data",
-        type=bool,
-        default=False,
-        help="If the original data should be used for clustering.",
-    )
-
-    # Parse the arguments
     args = parser.parse_args()
 
     config = load_config(
@@ -364,8 +264,15 @@ if __name__ == "__main__":
         model_file=args.model_file,
         index=args.index,
         index_data=args.index_data,
-        original_data=args.original_data,
+        eval_subset=args.eval_subset,
     )
-    run_clusters(config=config, load_embeddings=False, load_clusters=False)
 
-    logger.info("Finished Clustering.")
+    run_clusters(
+        config=config,
+        load_embeddings=args.load_embeddings,
+        load_clusters=args.load_clusters,
+        min_cluster_size=args.min_cluster_size,
+        min_samples=args.min_samples,
+    )
+
+    logger.info("Phase 2 clustering finished.")
