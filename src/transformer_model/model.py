@@ -127,7 +127,6 @@ def create_model(config, train_loader, val_loader, test_loader, data, logger, de
 
 def evaluate(evaluator, config=None, save_embeddings=True, save_data=True):
     """Perform a single, one-off evaluation on an evaluator object (initialized with a dataset)"""
-
     eval_start_time = time.time()
     with torch.no_grad():
         aggr_metrics, per_batch = evaluator.evaluate(
@@ -136,16 +135,12 @@ def evaluate(evaluator, config=None, save_embeddings=True, save_data=True):
     eval_runtime = time.time() - eval_start_time
 
     if save_data:
-        outputs_filepath = os.path.join(
-            os.path.join(config["output_dir"], "output_data.pt")
-        )
+        outputs_filepath = os.path.join(config["output_dir"], "output_data.pt")
         
-        # Consolidate lists seamlessly into PyTorch tensors directly.
-        # This keeps it in the original PyTorch architecture while preventing pickle from eating RAM.
         save_dict = {}
         for k in list(per_batch.keys()):
             if k == "attn_maps":
-                per_batch[k] = [] # drop immediately
+                per_batch[k] = []
             elif k == "IDs":
                 save_dict[k] = [item for sublist in per_batch[k] for item in sublist]
                 per_batch[k] = []
@@ -155,9 +150,20 @@ def evaluate(evaluator, config=None, save_embeddings=True, save_data=True):
             elif len(per_batch[k]) > 0:
                 import numpy as np
                 save_dict[k] = torch.from_numpy(np.concatenate(per_batch[k], axis=0))
-                per_batch[k] = [] # <--- CRITICAL FIX 2: Free list aggressively before next key grows to avoid 2x allocation
+                per_batch[k] = []
         
         torch.save(save_dict, outputs_filepath)
+        
+        # Reconstruct per_batch from save_dict so it's not empty on return
+        import numpy as np
+        for k, v in save_dict.items():
+            if k == "IDs":
+                per_batch[k] = [v]          # wrap back as a list of one "batch"
+            elif k == "metrics":
+                per_batch[k] = v.tolist()
+            else:
+                per_batch[k] = [v.numpy()]  # wrap as single-element list so np.concatenate works
+        
         del save_dict
 
     print_str = "Evaluation Summary: "
