@@ -87,7 +87,24 @@ def find_peak_window_and_extract(raw_dir, out_dir, duration_sec, num_cars):
             out_file = os.path.join(out_dir, os.path.basename(row['file']))
             df_filtered.to_csv(out_file, index=False)
             
-    print("Extraction complete!\n")
+            
+    import json
+    config_dict = {
+        "raw_dir": raw_dir,
+        "out_dir": out_dir,
+        "duration_sec": duration_sec,
+        "num_cars_requested": num_cars,
+        "best_t_start": float(best_t),
+        "best_t_end": float(best_t_end),
+        "max_active_cars": int(max_active_cars),
+        "global_start": float(global_start),
+        "global_end": float(global_end)
+    }
+    config_path = os.path.join(os.path.dirname(out_dir), "poc_config.json")
+    with open(config_path, "w") as f:
+        json.dump(config_dict, f, indent=4)
+        
+    print(f"Extraction complete! Configuration saved to {config_path}\n")
     return out_dir
 
 def run_analytics(data_dir, report_dir):
