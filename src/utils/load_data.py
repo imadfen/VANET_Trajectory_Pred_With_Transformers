@@ -35,9 +35,9 @@ def load_data(config, logger, save_data=True):
     # ── Try to load saved indices from model folder first ──────────────────
     indices_path = None
     for candidate in [
-        config.get("output_dir", ""),
-        os.path.dirname(config.get("load_model", "")),
-        os.path.dirname(os.path.dirname(config.get("load_model", ""))),
+        config.get("output_dir") or "",
+        os.path.dirname(config.get("load_model") or ""),
+        os.path.dirname(os.path.dirname(config.get("load_model") or "")),
     ]:
         if not candidate:
             continue
@@ -102,7 +102,7 @@ def load_data(config, logger, save_data=True):
             )
 
     # Only save indices on fresh training — not eval, not clustering
-    if indices_path is None and not config.get("eval_only") and config.get("eval_subset") is None:
+    if indices_path is None and not config.get("eval_only") and eval_subset is None:
         save_indices(
             indices={"train": train_indices, "val": val_indices, "test": test_indices},
             folder=config["output_dir"],
@@ -130,52 +130,43 @@ def load_data(config, logger, save_data=True):
 
         if hasattr(my_data, "all_chunks"):
 
-            # ── Try to load saved norm constants first (eval/subset mode) ──
+            # ── Try to load saved norm constants (eval/subset/clustering mode) ──
             norm_loaded = False
-            if indices_path is not None:
-                norm_path = None
-                for candidate in [
-                    os.path.dirname(indices_path),
-                    os.path.dirname(config.get("load_model", "")),
-                    os.path.dirname(os.path.dirname(config.get("load_model", ""))),
-                ]:
-                    if not candidate:
-                        continue
-                    p = os.path.join(candidate, "norm_constants.npy")
-                    if os.path.exists(p):
-                        norm_path = p
-                        break
+            norm_path = None
+            for candidate in [
+                config.get("output_dir") or "",
+                os.path.dirname(config.get("load_model") or ""),
+                os.path.dirname(os.path.dirname(config.get("load_model") or "")),
+                os.path.dirname(indices_path) if indices_path else "",
+            ]:
+                if not candidate:
+                    continue
+                p = os.path.join(candidate, "norm_constants.npy")
+                if os.path.exists(p):
+                    norm_path = p
+                    break
 
-                if norm_path is not None:
-                    logger.info(f"Loading normalization constants from {norm_path}")
-                    norm = np.load(norm_path, allow_pickle=True).item()
-                    if "min_val" in norm:
-                        my_data.min_val   = norm["min_val"]
-                        my_data.max_val   = norm["max_val"]
-                        my_data.norm_type = norm["norm_type"]
-                    elif "mean" in norm:
-                        my_data.mean      = norm["mean"]
-                        my_data.std       = norm["std"]
-                        my_data.norm_type = norm["norm_type"]
-                    logger.info(f"Restored normalization constants ({norm['norm_type']})")
-                    norm_loaded = True
-
-                    # Still need to normalize all_chunks using loaded constants
-                    if "min_val" in norm:
-                        for i in range(len(my_data.all_chunks)):
-                            my_data.all_chunks[i] = (
-                                my_data.all_chunks[i].astype(np.float32) - my_data.min_val
-                            ) / ((my_data.max_val - my_data.min_val) + 1e-8)
-                    elif "mean" in norm:
-                        for i in range(len(my_data.all_chunks)):
-                            my_data.all_chunks[i] = (
-                                my_data.all_chunks[i] - my_data.mean
-                            ) / (my_data.std + 1e-8)
-                else:
-                    logger.warning(
-                        "No norm_constants.npy found — normalization will be recomputed "
-                        "from current data subset. Metrics may be incorrect!"
-                    )
+            if norm_path is not None:
+                logger.info(f"Loading normalization constants from {norm_path}")
+                norm = np.load(norm_path, allow_pickle=True).item()
+                if "min_val" in norm:
+                    my_data.min_val   = norm["min_val"]
+                    my_data.max_val   = norm["max_val"]
+                    my_data.norm_type = norm["norm_type"]
+                    for i in range(len(my_data.all_chunks)):
+                        my_data.all_chunks[i] = (
+                            my_data.all_chunks[i].astype(np.float32) - my_data.min_val
+                        ) / ((my_data.max_val - my_data.min_val) + 1e-8)
+                elif "mean" in norm:
+                    my_data.mean      = norm["mean"]
+                    my_data.std       = norm["std"]
+                    my_data.norm_type = norm["norm_type"]
+                    for i in range(len(my_data.all_chunks)):
+                        my_data.all_chunks[i] = (
+                            my_data.all_chunks[i] - my_data.mean
+                        ) / (my_data.std + 1e-8)
+                logger.info(f"Restored normalization constants ({norm['norm_type']})")
+                norm_loaded = True
 
             # ── Compute fresh if not loaded ─────────────────────────────────
             if not norm_loaded:
@@ -200,12 +191,12 @@ def load_data(config, logger, save_data=True):
                     for i in range(len(my_data.all_chunks)):
                         my_data.all_chunks[i] = (my_data.all_chunks[i] - mean) / (std + 1e-8)
 
-                    # ── Save norm constants for future eval runs ────────────
-                    if indices_path is None:
-                        norm_path = os.path.join(config["output_dir"], "norm_constants.npy")
-                        np.save(norm_path, {"mean": mean, "std": std,
-                                            "norm_type": config["data_normalization"]})
-                        logger.info(f"Saved normalization constants to {norm_path}")
+                    # Save only on fresh training run
+                    if indices_path is None and not config.get("eval_only") and eval_subset is None:
+                        norm_save_path = os.path.join(config["output_dir"], "norm_constants.npy")
+                        np.save(norm_save_path, {"mean": mean, "std": std,
+                                                  "norm_type": config["data_normalization"]})
+                        logger.info(f"Saved normalization constants to {norm_save_path}")
 
                 elif config["data_normalization"] in ["minmax", "per_sample_minmax"]:
                     min_val = np.min(train_data_stack, axis=0)
@@ -220,12 +211,12 @@ def load_data(config, logger, save_data=True):
                             my_data.all_chunks[i].astype(np.float32) - min_val
                         ) / ((max_val - min_val) + 1e-8)
 
-                    # ── Save norm constants for future eval runs ────────────
-                    if indices_path is None:
-                        norm_path = os.path.join(config["output_dir"], "norm_constants.npy")
-                        np.save(norm_path, {"min_val": min_val, "max_val": max_val,
-                                            "norm_type": config["data_normalization"]})
-                        logger.info(f"Saved normalization constants to {norm_path}")
+                    # Save only on fresh training run
+                    if indices_path is None and not config.get("eval_only") and eval_subset is None:
+                        norm_save_path = os.path.join(config["output_dir"], "norm_constants.npy")
+                        np.save(norm_save_path, {"min_val": min_val, "max_val": max_val,
+                                                  "norm_type": config["data_normalization"]})
+                        logger.info(f"Saved normalization constants to {norm_save_path}")
 
         else:
             normalizer = Normalizer(config["data_normalization"])
