@@ -3,8 +3,6 @@ import os
 import sys
 import traceback
 from datetime import datetime
-import string
-import random
 
 import logging
 
@@ -96,12 +94,8 @@ def setup(args):
 
     output_dir = os.path.join(output_dir, config["experiment_name"])
 
-    # Create checkpoint, prediction and tensorboard directories
+    # Keep timestamp in config for records/logging purposes only — NOT in the folder name
     config["initial_timestamp"] = initial_timestamp.strftime("%Y-%m-%d_%H-%M-%S")
-
-    # if len(config["experiment_name"]) == 0:
-    rand_suffix = "".join(random.choices(string.ascii_letters + string.digits, k=3))
-    output_dir += "_" + config["initial_timestamp"] + "_" + rand_suffix
 
     config["output_dir"] = output_dir
     config["save_dir"] = os.path.join(output_dir, "checkpoints")
