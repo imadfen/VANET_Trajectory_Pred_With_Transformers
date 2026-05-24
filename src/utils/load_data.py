@@ -32,44 +32,8 @@ def load_data(config, logger, save_data=True):
     my_data = data_class(config, n_proc=config["n_proc"])
     my_data.load_data()
 
-    # ── Try to load saved indices from model folder first ──────────────────
-    indices_path = None
-    for candidate in [
-        config.get("output_dir") or "",
-        os.path.dirname(config.get("load_model") or ""),
-        os.path.dirname(os.path.dirname(config.get("load_model") or "")),
-    ]:
-        if not candidate:
-            continue
-        for filename in ["data_indices.pt", "data_indices.json"]:
-            candidate_path = os.path.join(candidate, filename)
-            if os.path.exists(candidate_path):
-                indices_path = candidate_path
-                break
-        if indices_path:
-            break
-
-    if indices_path is not None:
-        logger.info(f"Loading saved data split from {indices_path}")
-        if indices_path.endswith(".json"):
-            import json
-            with open(indices_path) as f:
-                saved = json.load(f)
-            train_indices = saved["train_indices"]
-            val_indices   = saved["val_indices"]
-            test_indices  = saved["test_indices"]
-        else:
-            saved         = torch.load(indices_path)
-            train_indices = saved["train"]
-            val_indices   = saved["val"]
-            test_indices  = saved["test"]
-        logger.info(
-            f"Restored split: {len(train_indices)} train / "
-            f"{len(val_indices)} val / {len(test_indices)} test"
-        )
-
-    # ── Otherwise fall back to fresh split ─────────────────────────────────
-    elif config["val_ratio"] == 1:
+    # ── Fresh split always ──────────────────────────────────────────────────
+    if config["val_ratio"] == 1:
         val_indices   = my_data.all_IDs
         train_indices = []
         test_indices  = []
@@ -101,8 +65,8 @@ def load_data(config, logger, save_data=True):
                 f"eval_subset={eval_subset} >= val size ({len(val_indices)}), using full val set"
             )
 
-    # Only save indices on fresh training — not eval, not clustering
-    if indices_path is None and not config.get("eval_only") and eval_subset is None:
+    # Save indices only on fresh training — not eval, not clustering
+    if not config.get("eval_only") and eval_subset is None:
         save_indices(
             indices={"train": train_indices, "val": val_indices, "test": test_indices},
             folder=config["output_dir"],
@@ -130,14 +94,13 @@ def load_data(config, logger, save_data=True):
 
         if hasattr(my_data, "all_chunks"):
 
-            # ── Try to load saved norm constants (eval/subset/clustering mode) ──
+            # ── Try to load saved norm constants ───────────────────────────
             norm_loaded = False
             norm_path = None
             for candidate in [
                 config.get("output_dir") or "",
                 os.path.dirname(config.get("load_model") or ""),
                 os.path.dirname(os.path.dirname(config.get("load_model") or "")),
-                os.path.dirname(indices_path) if indices_path else "",
             ]:
                 if not candidate:
                     continue
@@ -192,7 +155,7 @@ def load_data(config, logger, save_data=True):
                         my_data.all_chunks[i] = (my_data.all_chunks[i] - mean) / (std + 1e-8)
 
                     # Save only on fresh training run
-                    if indices_path is None and not config.get("eval_only") and eval_subset is None:
+                    if not config.get("eval_only") and eval_subset is None:
                         norm_save_path = os.path.join(config["output_dir"], "norm_constants.npy")
                         np.save(norm_save_path, {"mean": mean, "std": std,
                                                   "norm_type": config["data_normalization"]})
@@ -212,7 +175,7 @@ def load_data(config, logger, save_data=True):
                         ) / ((max_val - min_val) + 1e-8)
 
                     # Save only on fresh training run
-                    if indices_path is None and not config.get("eval_only") and eval_subset is None:
+                    if not config.get("eval_only") and eval_subset is None:
                         norm_save_path = os.path.join(config["output_dir"], "norm_constants.npy")
                         np.save(norm_save_path, {"min_val": min_val, "max_val": max_val,
                                                   "norm_type": config["data_normalization"]})
