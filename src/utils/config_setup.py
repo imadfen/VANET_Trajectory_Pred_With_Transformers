@@ -35,7 +35,8 @@ def load_config(config_filepath):
         "save_embeddings",
         "val_ratio",
         "dropout",
-        "exclude_feats"
+        "exclude_feats",
+        "data_subset"
     ]
 
     for key in keys_to_delete:
