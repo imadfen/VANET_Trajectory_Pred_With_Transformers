@@ -40,7 +40,8 @@ def load_config(config_filepath):
     ]
 
     for key in keys_to_delete:
-        del config[key]
+        if key in config:
+            del config[key]
 
     return config
 
