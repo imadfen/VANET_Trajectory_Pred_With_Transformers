@@ -119,7 +119,7 @@ def create_model(config, train_loader, val_loader, test_loader, data, logger, de
     elif config.get("intent_weight", 0.0) > 0:
         logger.warning(
             "intent_weight > 0 but no intent_labels_path found in config. "
-            "Run src/deploy/attach_labels.py first (Step 2.5)."
+            "Run src/deploy/attach_labels.py first."
         )
 
     return model, optimizer, trainer, val_evaluator, test_evaluator, start_epoch
