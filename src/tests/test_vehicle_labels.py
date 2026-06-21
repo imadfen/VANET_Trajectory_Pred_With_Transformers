@@ -1,9 +1,4 @@
-"""
-test_vehicle_labels.py — verify VEHICLE_LABELS and intent assignment logic.
 
-Run from project root:
-    python src/tests/test_vehicle_labels.py
-"""
 
 import sys
 import os
@@ -17,17 +12,14 @@ from src.clustering.Labels import (
 )
 from src.reachability_analysis.input_state import VEHICLE_LABELS as VL_input
 
-# ── 1. Label dict contents ──────────────────────────────────────────────────
 print("[Test 1] VEHICLE_LABELS contents ...")
 assert VEHICLE_LABELS == {0: "MaintainLane", 1: "Turn", 2: "Exit", 3: "Brake"}
 print(f"  PASS  {VEHICLE_LABELS}")
 
-# ── 2. Consistent across modules ───────────────────────────────────────────
 print("[Test 2] VEHICLE_LABELS consistent between Labels.py and input_state.py ...")
 assert VEHICLE_LABELS == VL_input, f"Mismatch:\n  Labels: {VEHICLE_LABELS}\n  input_state: {VL_input}"
 print("  PASS")
 
-# ── 3. assign_intent_labels: argmax of logits ──────────────────────────────
 print("[Test 3] assign_intent_labels ...")
 logits = np.array([
     [10.0, -1.0, -1.0, -1.0],   # → 0 MaintainLane
@@ -39,7 +31,6 @@ labels = assign_intent_labels(logits)
 assert list(labels) == [0, 1, 2, 3], f"Expected [0,1,2,3], got {list(labels)}"
 print(f"  PASS  labels = {list(labels)} → {[VEHICLE_LABELS[l] for l in labels]}")
 
-# ── 4. label_trajectories: grouping by label ──────────────────────────────
 print("[Test 4] label_trajectories grouping ...")
 N, T, F = 8, 50, 51
 data     = np.random.randn(N, T, F)

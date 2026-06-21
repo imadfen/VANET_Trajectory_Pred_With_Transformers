@@ -1,23 +1,4 @@
-"""
-Loop A — Adaptive Awareness (Ego-Vehicle Suppression)
-=====================================================
 
-The ego vehicle runs its local Transformer continuously. At each 100 ms tick it
-compares the Transformer's previously predicted window against the actual sensor
-reading. If the residual is below the threshold ε the vehicle is in a *stable*,
-predictable state and reduces its BSM beacon rate to `beacon_hz_low` (2 Hz).
-When the residual exceeds ε the system switches to *alert* mode at `beacon_hz_high`
-(10 Hz) to ensure neighbours receive the latest state.
-
-Classes
--------
-DiscrepancyMonitor
-    Core comparison logic. Framework-agnostic: operates on NumPy arrays.
-
-HallucinationEngine
-    Autoregressive stub that lets a *receiving* neighbour fill gaps during the
-    ego's 2 Hz suppression windows without waiting for the next real beacon.
-"""
 
 from __future__ import annotations
 
@@ -29,17 +10,13 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Constants
-# ──────────────────────────────────────────────────────────────────────────────
+
 
 ENTROPY_LOW  = 0  # Flag value: prediction matches reality, reduce beacon rate
 ENTROPY_HIGH = 1  # Flag value: unexpected manoeuvre, trigger alert rate
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Data class for a single Loop-A decision
-# ──────────────────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class LoopADecision:
@@ -59,9 +36,7 @@ class LoopADecision:
     beacon_hz:  float
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DiscrepancyMonitor
-# ──────────────────────────────────────────────────────────────────────────────
+
 
 class DiscrepancyMonitor:
     """Compare the Transformer's predicted future against the actual sensor path.
@@ -172,9 +147,7 @@ class DiscrepancyMonitor:
         ]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# HallucinationEngine
-# ──────────────────────────────────────────────────────────────────────────────
+
 
 class HallucinationEngine:
     """Generate hallucinated trajectories to fill gaps during ego suppression.

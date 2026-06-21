@@ -1,32 +1,4 @@
-"""
-src/deploy/export_decisions.py
-==============================
-Offline batch script — generates a `decisions.json` file that maps every
-vehicle + timestep to the Loop A / Loop B decisions produced by the trained
-Transformer model.
 
-This file is consumed by `DataCollectorApp.cc` in the second OMNeT++ run
-to apply beacon suppression (Loop A) and MAC backoff biasing (Loop B)
-without any live socket communication.
-
-Usage (from project root):
-    python src/deploy/export_decisions.py \\
-        --folder=experiments \\
-        --model_file=dual_loop_run_2026-05-17_XX-XX-XX_XXX \\
-        --data_dir=resources/VANET_data/raw/dataset-35m-10hz-packet_loss_32%/raw/ \\
-        --pattern=data_car_ \\
-        --output=decisions.json
-
-Output format (decisions.json):
-    {
-        "car_32": {
-            "18003.10": {"beacon_hz": 2.0,  "mac_wait_ms": 100.0, "flag": 0, "intent": "MaintainLane"},
-            "18003.20": {"beacon_hz": 10.0, "mac_wait_ms": 1.0,   "flag": 1, "intent": "Brake"},
-            ...
-        },
-        ...
-    }
-"""
 
 import sys
 import os
@@ -38,7 +10,6 @@ import logging
 import numpy as np
 import torch
 
-# ── path setup ───────────────────────────────────────────────────────────────
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.append(ROOT)
 
@@ -46,21 +17,15 @@ from src.loops.loop_a import DiscrepancyMonitor
 from src.loops.loop_b import StabilityScorer, MACBiasMapper
 from src.clustering.run import load_config, load_embeddings_from_pt
 
-# ── logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s : %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
 
-# ── Feature layout (must match VANET_FEATURE_NAMES) ──────────────────────────
 IDX_TIME = None   # 'Time' column — read separately, not a model feature
 N_FEATURES = 51   # columns after dropping 'Time'
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CSV loading helpers
-# ─────────────────────────────────────────────────────────────────────────────
 
 def load_vehicle_csv(filepath: str, global_min=None, global_max=None):
     """
@@ -104,15 +69,10 @@ def sliding_windows(features: np.ndarray, seq_len: int, step: int = 1):
         yield i, features[i : i + seq_len]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Model inference helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
 def load_model(config: dict, device: torch.device):
     """Load the pre-trained Transformer from the experiment checkpoint."""
     from src.transformer_model.encoder import TSTransformerEncoder
 
-    # Bypass central create_model() because offline inference has no live Dataloaders
     model = TSTransformerEncoder(
         feat_dim=51,
         max_len=config.get("max_seq_len", 60),
@@ -127,16 +87,13 @@ def load_model(config: dict, device: torch.device):
         num_intents=config.get("num_intents", 4),
     )
 
-    # Look for the final fine-tuned weights inside the target experiment folder
     ckpt_path = os.path.join(config["save_dir"], "checkpoints", "model_best.pth")
     if not os.path.exists(ckpt_path):
-        # Fallback if the script wasn't fully trained
         ckpt_path = config["load_model"]
         
     logger.info(f"Loading weights from: {ckpt_path}")
     state = torch.load(ckpt_path, map_location=device)
     
-    # Unwrap checkpoint payload and defensively strip any residual DataParallel "module." prefixes
     state_dict = state.get("state_dict", state)
     clean_state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
     
@@ -170,10 +127,6 @@ def infer_window(model, window: np.ndarray, device: torch.device):
     return recon, intent_logits
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main export routine
-# ─────────────────────────────────────────────────────────────────────────────
-
 def export_decisions(
     folder:     str,
     model_file: str,
@@ -186,14 +139,12 @@ def export_decisions(
     min_wait_ms: float = 1.0,
     max_wait_ms: float = 100.0,
 ):
-    # ── Load config and model ─────────────────────────────────────────────────
     config = load_config(folder=folder, model_file=model_file)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Running on: {device}")
 
     model = load_model(config, device)
 
-    # ── Initialise Loop A / B ─────────────────────────────────────────────────
     monitor = DiscrepancyMonitor(
         epsilon        = epsilon,
         beacon_hz_low  = config.get("beacon_hz_low",  2.0),
@@ -202,7 +153,6 @@ def export_decisions(
     scorer = StabilityScorer()
     mapper = MACBiasMapper(min_wait_ms=min_wait_ms, max_wait_ms=max_wait_ms)
 
-    # ── Find all vehicle CSV files ────────────────────────────────────────────
     input_paths = sorted(glob.glob(os.path.join(data_dir, f"{pattern}*.csv")))
     logger.info(f"Found {len(input_paths)} vehicle files in: {data_dir}")
 
@@ -211,10 +161,6 @@ def export_decisions(
             f"No CSV files matching '{pattern}*.csv' found in {data_dir}"
         )
 
-    # ── Process each vehicle ──────────────────────────────────────────────────
-    # =========================================================================
-    # PRE-COMPUTATION PASS: Calculate Global Bounds for Normalization Engine
-    # =========================================================================
     logger.info("Pre-computing Global Physics Bounds for Data Normalization...")
     global_min, global_max = None, None
     for filepath in input_paths:
@@ -252,28 +198,22 @@ def export_decisions(
         prev_prediction = None
 
         for start_idx, window in sliding_windows(features, seq_len, step):
-            # ── Model inference ───────────────────────────────────────────────
             prediction, intent_logits = infer_window(model, window, device)
 
-            # ── Loop A: compare previous prediction to current actual ─────────
             if prev_prediction is not None:
                 actual_window = features[start_idx : start_idx + seq_len]
                 loop_a = monitor.check(prev_prediction, actual_window)
             else:
-                # First window — no prior prediction available, default to low entropy
                 from src.loops.loop_a import LoopADecision
                 loop_a = LoopADecision(flag=0, residual=0.0,
                                        beacon_hz=monitor.beacon_hz_low)
 
-            # ── Loop B: stability scoring on intent logits ────────────────────
             logit_tensor = torch.tensor(intent_logits)
             loop_b       = scorer.score(logit_tensor)
             mac_wait_ms  = mapper.map(loop_b.P_stable)
 
-            # ── Record decision keyed to the LAST timestep of the window ──────
             ts_key = f"{times[start_idx + seq_len - 1]:.2f}"
             
-            # intent mapping
             from src.deploy.attach_labels import VEHICLE_LABELS
             intent_idx = int(np.argmax(intent_logits)) if np.any(intent_logits) else 0
             
@@ -289,7 +229,6 @@ def export_decisions(
         all_decisions[car_id] = car_decisions
         logger.info(f"  → {len(car_decisions)} decisions recorded")
 
-    # ── Write output ──────────────────────────────────────────────────────────
     out_path = os.path.join(ROOT, output)
     with open(out_path, "w") as f:
         json.dump(all_decisions, f, indent=2)
@@ -298,7 +237,6 @@ def export_decisions(
     logger.info(f"  Total vehicles : {len(all_decisions)}")
     logger.info(f"  Total decisions: {sum(len(v) for v in all_decisions.values())}")
 
-    # ── Quick summary stats ───────────────────────────────────────────────────
     all_hz = [
         d["beacon_hz"]
         for v in all_decisions.values()
@@ -319,7 +257,6 @@ def export_decisions(
     intent_dist = dict(Counter(intents))
     logger.info(f"Loop B intent distribution: {intent_dist}")
     
-    # ── Write Analytics Report (.md) ──────────────────────────────────────────
     out_dir = os.path.dirname(out_path)
     report_path = os.path.join(out_dir, "decisions_analytics.md")
     
@@ -350,10 +287,6 @@ def export_decisions(
 
     return all_decisions
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CLI
-# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(

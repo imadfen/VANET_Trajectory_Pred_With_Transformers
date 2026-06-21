@@ -1,10 +1,3 @@
-"""
-Phase 3 — Vehicle Reachable Set Inclusion Accuracy
-
-Computes what percentage of actual vehicle GPS positions fall inside
-the predicted reachable sets. This is the primary evaluation metric
-for the Phase 3 reachability analysis module.
-"""
 
 import numpy as np
 import os

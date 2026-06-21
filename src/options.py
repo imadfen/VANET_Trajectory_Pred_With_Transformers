@@ -319,7 +319,6 @@ class Options(object):
             help="Normalization layer to be used internally in transformer encoder",
         )
 
-        # ── Dual-Loop: Intent Head ─────────────────────────────────────────────
         self.parser.add_argument(
             "--num_intents",
             type=int,
@@ -333,7 +332,6 @@ class Options(object):
             help="Weight of CE intent classification loss (0 = unsupervised pre-training)",
         )
 
-        # ── Dual-Loop: Loop A thresholds ───────────────────────────────────────
         self.parser.add_argument(
             "--entropy_threshold",
             type=float,
@@ -353,7 +351,6 @@ class Options(object):
             help="Loop A: BSM beacon rate in High-Entropy (alert) mode (Hz)",
         )
 
-        # ── Dual-Loop: Loop B thresholds ───────────────────────────────────────
         self.parser.add_argument(
             "--relay_constant",
             type=float,

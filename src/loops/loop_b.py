@@ -1,30 +1,4 @@
-"""
-Loop B — Selective Forwarding (Relay Meritocracy)
-=================================================
 
-When an emergency alert (e.g. "Hard Braking") propagates through the VANET, every
-receiving vehicle must decide *whether* and *when* to relay it. Instead of a
-random MAC backoff (which causes broadcast storms), Loop B biases the 802.11p
-backoff timer using the vehicle's Transformer-derived **Stability Probability**
-P_stable.
-
-Flow
-----
-1. Vehicle receives alert.
-2. Feeds its current context through the local Transformer → ``intent_logits``.
-3. ``StabilityScorer.score(intent_logits)`` → ``P_stable``.
-4. ``MACBiasMapper.map(P_stable)`` → ``T_wait_ms``.
-5. OBU sets MAC backoff to ``T_wait_ms``.
-   - Stable vehicle (P_stable ≈ 1.0) → ~1–5 ms → relays first.
-   - Unstable vehicle (P_stable ≈ 0.2) → ~50–100 ms → hears first relay, cancels.
-
-Intent Label Constants
-----------------------
-MAINTAIN = 0   (Maintain Lane)  ← treated as the "stable" class
-TURN     = 1
-EXIT     = 2
-BRAKE    = 3   (emergency manoeuvre)
-"""
 
 from __future__ import annotations
 
@@ -38,9 +12,7 @@ import torch.nn.functional as F
 logger = logging.getLogger(__name__)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Intent class labels
-# ──────────────────────────────────────────────────────────────────────────────
+
 
 MAINTAIN = 0  # Stable: maintain current lane / cruise
 TURN     = 1  # Moderate: planned turning manoeuvre
@@ -53,9 +25,7 @@ INTENT_NAMES = {MAINTAIN: "MaintainLane", TURN: "Turn", EXIT: "Exit", BRAKE: "Br
 STABLE_CLASS_IDX = MAINTAIN
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Data class for a single Loop-B decision
-# ──────────────────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class LoopBDecision:
@@ -78,9 +48,7 @@ class LoopBDecision:
     T_wait_ms:             float
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# StabilityScorer
-# ──────────────────────────────────────────────────────────────────────────────
+
 
 class StabilityScorer:
     """Convert Transformer intent logits → P_stable and raw T_wait.
@@ -159,9 +127,7 @@ class StabilityScorer:
         return [self.score(intent_logits[i]) for i in range(len(intent_logits))]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# MACBiasMapper
-# ──────────────────────────────────────────────────────────────────────────────
+
 
 class MACBiasMapper:
     """Clip and scale the raw T_wait into the configurable [min, max] ms window.

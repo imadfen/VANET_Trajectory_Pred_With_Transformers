@@ -1,9 +1,4 @@
-"""
-test_input_state.py — verify VANET state vector extraction and I/O state creation.
 
-Run from project root:
-    python src/tests/test_input_state.py
-"""
 
 import sys
 import os
@@ -19,7 +14,6 @@ from src.reachability_analysis.input_state import (
 )
 from src.reachability_analysis.simulation import get_initial_conditions
 
-# ── 1. Feature indices ─────────────────────────────────────────────────────
 print("[Test 1] Feature indices ...")
 assert IDX_X == 0,       f"Expected IDX_X=0,       got {IDX_X}"
 assert IDX_Y == 1,       f"Expected IDX_Y=1,       got {IDX_Y}"
@@ -27,7 +21,6 @@ assert IDX_SPEED == 2,   f"Expected IDX_SPEED=2,   got {IDX_SPEED}"
 assert IDX_HEADING == 4, f"Expected IDX_HEADING=4, got {IDX_HEADING}"
 print(f"  PASS  X={IDX_X}  Y={IDX_Y}  Speed={IDX_SPEED}  Heading={IDX_HEADING}")
 
-# ── 2. filter_paddings ─────────────────────────────────────────────────────
 print("[Test 2] filter_paddings ...")
 data    = np.arange(24).reshape(4, 2, 3).astype(float)   # 4 chunks
 padding = np.array([[True, True], [True, False], [True, True], [False, True]])
@@ -35,7 +28,6 @@ filtered = filter_paddings(data, padding)
 assert filtered.shape[0] == 2, f"Expected 2 unpadded chunks, got {filtered.shape[0]}"
 print(f"  PASS  4 chunks → {filtered.shape[0]} fully unpadded")
 
-# ── 3. separate_data_to_class ─────────────────────────────────────────────
 print("[Test 3] separate_data_to_class ...")
 N, T, F = 12, 50, 51
 data   = np.random.randn(N, T, F)
@@ -49,14 +41,12 @@ assert grouped[3].shape[0] == 2   # label 3 appears 2 times
 counts_str = {k: v.shape[0] for k, v in grouped.items()}
 print(f"  PASS  counts = {counts_str}")
 
-# ── 4. structure_input_data (equalise classes) ────────────────────────────
 print("[Test 4] structure_input_data (balanced classes) ...")
 new_d, new_l = structure_input_data(data, labels)
 unique, counts = np.unique(new_l, return_counts=True)
 assert len(set(counts)) == 1, f"Classes not balanced: {dict(zip(unique, counts))}"
 print(f"  PASS  balanced at {counts[0]} samples per class")
 
-# ── 5. structure_input_data_for_clusters (cap at max_data) ────────────────
 print("[Test 5] structure_input_data_for_clusters (cap) ...")
 capped_d, capped_l = structure_input_data_for_clusters(data, labels, max_data=2)
 for lbl_id in np.unique(capped_l):
@@ -64,7 +54,6 @@ for lbl_id in np.unique(capped_l):
     assert n <= 2, f"Class {lbl_id} has {n} samples > max_data=2"
 print(f"  PASS  all classes capped at ≤2 samples")
 
-# ── 6. get_initial_conditions: pos and vel from VANET chunk ──────────────
 print("[Test 6] get_initial_conditions from VANET chunk ...")
 chunk = np.zeros((50, 51))
 chunk[:, IDX_X]       = np.linspace(0, 100, 50)   # X from 0→100 m

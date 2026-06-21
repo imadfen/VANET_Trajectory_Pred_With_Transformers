@@ -1,9 +1,4 @@
-"""
-Vehicle driving-behavior label utilities for Phase 2 cluster visualisation.
 
-Replaces the pedestrian SinD labeling oracle with vehicle intent labels
-mapped to the 4-class intent head: MaintainLane / Turn / Exit / Brake.
-"""
 
 import numpy as np
 import pandas as pd
@@ -14,9 +9,7 @@ from sklearn.manifold import TSNE
 from matplotlib.colors import ListedColormap
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
-# ---------------------------------------------------------------------------
-# Vehicle intent labels — aligned with encoder intent_head output classes
-# ---------------------------------------------------------------------------
+
 VEHICLE_LABELS = {
     0: "MaintainLane",
     1: "Turn",
@@ -48,18 +41,14 @@ COLORS = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Colour palette helper
-# ---------------------------------------------------------------------------
+
 
 def get_color_palette(num_data: int):
     cmap = cm.get_cmap("hsv")
     return [cmap(i / max(num_data, 1)) for i in range(num_data)]
 
 
-# ---------------------------------------------------------------------------
-# Label assignment from intent logits
-# ---------------------------------------------------------------------------
+
 
 def assign_intent_labels(intent_logits: np.ndarray) -> np.ndarray:
     """Convert (N, 4) intent logit array to (N,) hard label indices.
@@ -75,9 +64,7 @@ def assign_intent_labels(intent_logits: np.ndarray) -> np.ndarray:
     return np.argmax(intent_logits, axis=1)
 
 
-# ---------------------------------------------------------------------------
-# Trajectory grouping by label
-# ---------------------------------------------------------------------------
+
 
 def label_trajectories(
     data_original: np.ndarray,   # (N, seq_len, 23)
@@ -111,9 +98,7 @@ def label_trajectories(
     return trajectories, padding_per_label, clusters_per_label
 
 
-# ---------------------------------------------------------------------------
-# Trajectory plots (vehicle — no map overlay)
-# ---------------------------------------------------------------------------
+
 
 def plot_trajectories_per_label(
     trajectories: dict,
@@ -184,9 +169,7 @@ def plot_trajectories_color_clusters(
     plt.show()
 
 
-# ---------------------------------------------------------------------------
-# Dimensionality reduction plots (reusable — geometry-agnostic)
-# ---------------------------------------------------------------------------
+
 
 def plot_dual_tsne_3d(data_cluster1, data_cluster2, figsize=(14, 6)):
     data1, clusters1 = data_cluster1
