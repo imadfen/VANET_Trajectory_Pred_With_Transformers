@@ -70,8 +70,10 @@ def l2_reg_loss(model):
     """Returns the squared L2 norm of output layer of given model"""
 
     for name, param in model.named_parameters():
-        if name == "output_layer.weight":
+        if name.endswith("output_layer.weight"):
             return torch.sum(torch.square(param))
+            
+    return torch.tensor(0.0, device=next(model.parameters()).device)
 
 
 class MaskedMSELoss(nn.Module):

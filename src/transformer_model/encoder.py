@@ -33,6 +33,7 @@ def model_factory(config, data):
             pos_encoding=config["pos_encoding"],
             activation=config["activation"],
             norm=config["normalization_layer"],
+            num_intents=config.get("num_intents", 4),
         )
     else:
         raise ValueError("Model class for task '{}' does not exist".format(task))
@@ -175,25 +176,29 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         src: Tensor,
         src_mask: Optional[Tensor] = None,
         src_key_padding_mask: Optional[Tensor] = None,
-        **kwargs
-    ) -> Tensor:
+        return_attn: bool = False,
+        **kwargs,
+    ):
         r"""Pass the input through the encoder layer.
 
         Args:
             src: the sequence to the encoder layer (required).
             src_mask: the mask for the src sequence (optional).
             src_key_padding_mask: the mask for the src keys per batch (optional).
+            return_attn: if True, also return the (B, T, T) attention weight tensor.
 
         Shape:
             see the docs in Transformer class.
         """
 
         #  Transformer Model and Residual connection
-        src2 = self.self_attn(
-            src, src, src, attn_mask=src_mask, key_padding_mask=src_key_padding_mask
-        )[
-            0
-        ]  # attn_output, attn_output_weights
+        src2, attn_weights = self.self_attn(
+            src, src, src,
+            attn_mask=src_mask,
+            key_padding_mask=src_key_padding_mask,
+            need_weights=return_attn,
+            average_attn_weights=True,
+        )  # attn_output, attn_output_weights (or None)
         src = src + self.dropout1(src2)  # (batch_size, seq_len, embedding_dim)
 
         # Normalization
@@ -209,10 +214,22 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         src = src.permute(0, 2, 1)  # (batch_size, embedding_dim, seq_len)
         src = self.norm2(src)
         src = src.permute(0, 2, 1)  # restore (batch_size, seq_len, embedding_dim)
+
+        if return_attn:
+            return src, attn_weights
         return src
 
 
 class TSTransformerEncoder(nn.Module):
+    """
+    Dual-headed Time-Series Transformer Encoder.
+
+    Outputs:
+      recon_output  : (B, T, feat_dim)   — imputation reconstruction head
+      intent_logits : (B, num_intents)   — intent classification head (Loop B)
+      attn_maps     : list[(B, T, T)]    — per-layer attention maps (Loop A)
+      (embeddings, embeddings_original)  — sequence embeddings
+    """
 
     def __init__(
         self,
@@ -227,12 +244,15 @@ class TSTransformerEncoder(nn.Module):
         activation="gelu",
         norm="BatchNorm",
         freeze=False,
+        num_intents=4,
     ):
         super(TSTransformerEncoder, self).__init__()
 
-        self.max_len = max_len
-        self.embedding_dim = embedding_dim
-        self.n_heads = n_heads
+        self.max_len         = max_len
+        self.embedding_dim   = embedding_dim
+        self.n_heads         = n_heads
+        self.num_intents     = num_intents
+        self._use_batch_norm = (norm != "LayerNorm")
 
         self.project_inp = nn.Linear(feat_dim, embedding_dim)
         self.pos_enc = get_pos_encoder(pos_encoding)(
@@ -257,40 +277,66 @@ class TSTransformerEncoder(nn.Module):
             )
 
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers)
-        self.act = _get_activation_fn(activation)
+        self.act      = _get_activation_fn(activation)
         self.dropout1 = nn.Dropout(dropout)
+
+        # ── Reconstruction head (imputation) ──────────────────────────────────
         self.output_layer = nn.Linear(embedding_dim, feat_dim)
+
+        # ── Intent classification head (Loop B) ───────────────────────────────
+        # Mean-pool sequence → num_intents logits.
+        # intent_weight=0 during unsupervised pre-training so this head adds
+        # zero loss, but is still shaped and ready for supervised fine-tuning.
+        self.intent_head = nn.Linear(embedding_dim, num_intents)
+
         self.feat_dim = feat_dim
 
-    def forward(self, X, padding_masks):
+    def forward(self, X, padding_masks, return_attn: bool = False):
         """
         Args:
-            X: (batch_size, seq_length, feat_dim) torch tensor of masked features (input)
-            padding_masks: (batch_size, seq_length) boolean tensor, 1 means keep vector at this position, 0 means padding
-        Returns:
-            output: (batch_size, seq_length, feat_dim)
+            X             : (B, seq_length, feat_dim) masked feature tensor
+            padding_masks : (B, seq_length) bool tensor — True = real data
+            return_attn   : if True, collect per-layer attention weight tensors
+
+        Returns
+        -------
+        recon_output  : (B, seq_length, feat_dim)
+        intent_logits : (B, num_intents)
+        attn_maps     : list[Tensor(B, T, T)] — empty unless return_attn=True
+        (embeddings, embeddings_original)
         """
+        inp = self.project_inp(X) * math.sqrt(self.embedding_dim)
+        inp = self.pos_enc(inp)
 
-        # permute because pytorch convention for transformers is [seq_length, batch_size, feat_dim]. padding_masks [batch_size, feat_dim]
-        inp = self.project_inp(X) * math.sqrt(
-            self.embedding_dim
-        )  # [batch_size, seq_length, embedding_dim] project input vectors to embedding_dim dimensional space
-        inp = self.pos_enc(inp)  # add positional encoding
+        # ── Run encoder, optionally collecting per-layer attention maps ────────
+        attn_maps: list = []
+        if return_attn and self._use_batch_norm:
+            hidden = inp
+            for layer in self.transformer_encoder.layers:
+                hidden, attn = layer(
+                    hidden,
+                    src_key_padding_mask=~padding_masks,
+                    return_attn=True,
+                )
+                if attn is not None:
+                    attn_maps.append(attn.detach())  # (B, T, T)
+            output = hidden
+        else:
+            output = self.transformer_encoder(
+                inp, src_key_padding_mask=~padding_masks
+            )
 
-        # NOTE: logic for padding masks is reversed to comply with definition in MultiHeadAttention, TransformerEncoderLayer
-        #  padding_masks: (batch_size, seq_length) boolean tensor, 1 means keep vector at this position, 0 means padding
-        output = self.transformer_encoder(
-            inp, src_key_padding_mask=~padding_masks
-        )  # (batch_size, seq_len, embedding_dim) # x3
         embeddings_original = output
-        output = self.act(
-            output
-        )  # the output transformer encoder/decoder embeddings don't include non-linearity
+        output = self.act(output)
         embeddings = output
+        output = self.dropout1(output)
 
-        output = self.dropout1(output)  # (batch_size, seq_length, embedding_dim)
+        # ── Reconstruction head ───────────────────────────────────────────────
+        recon_output = self.output_layer(output)  # (B, T, feat_dim)
 
-        # Most probably defining a Linear(embedding_dim,feat_dim) vectorizes the operation over (seq_length, batch_size).
-        output = self.output_layer(output)  # (batch_size, seq_length, feat_dim)
+        # ── Intent head: mean-pool over real (non-padding) time steps ─────────
+        pad_float = padding_masks.unsqueeze(-1).float()            # (B, T, 1)
+        pooled = (output * pad_float).sum(dim=1) / pad_float.sum(dim=1).clamp(min=1)
+        intent_logits = self.intent_head(pooled)                   # (B, num_intents)
 
-        return output, (embeddings, embeddings_original)
+        return recon_output, intent_logits, attn_maps, (embeddings, embeddings_original)
