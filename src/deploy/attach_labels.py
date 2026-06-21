@@ -94,12 +94,14 @@ def load_cluster_assignments(clusters_dir: str):
     return labels
 
 
-def hdbscan_to_intent(cluster_labels: np.ndarray) -> np.ndarray:
-    """Map raw HDBSCAN integer cluster IDs to the 4 intent classes.
+def hdbscan_to_intent(cluster_labels: np.ndarray, output_data: dict, exp_dir: str) -> np.ndarray:
+    """Map raw HDBSCAN integer cluster IDs to the 4 intent classes based on physical features.
 
-    Strategy: HDBSCAN clusters are sorted by their median Speed feature value
-    (which was saved in cluster_stats.json if available). Otherwise a simple
-    modulo mapping is used as a safe fallback.
+    Strategy:
+      - Turn (1): Absolute AngularVelocity > 0.05 rad/s
+      - Brake (3): Acceleration < -1.0 m/s^2
+      - Exit (2): Absolute LaneDist > 1.0 m (and not turning)
+      - MaintainLane (0): All remaining clusters
 
     Returns np.ndarray of shape (N,) with values in {0, 1, 2, 3}.
     Noise samples (cluster_id == -1) are assigned label 0 (MaintainLane).
@@ -113,24 +115,88 @@ def hdbscan_to_intent(cluster_labels: np.ndarray) -> np.ndarray:
             "Try reducing min_cluster_size or min_samples in Phase 2."
         )
 
-    logger.info(f"Mapping {n_clusters} HDBSCAN clusters → 4 intent classes")
+    logger.info(f"Mapping {n_clusters} HDBSCAN clusters → 4 intent classes using physical thresholds")
 
-    # Build a mapping: hdbscan_cluster_id → intent_label (0-3)
-    # Simple even-spread assignment: each raw cluster gets cycled through intents
-    # You can override this mapping manually in the printed table below.
+    # 1. Extract and pool physical features
+    targets = output_data["targets"]
+    padding_masks = output_data["padding_masks"]
+    
+    if hasattr(targets, "numpy"):
+        targets = targets.numpy()
+    if hasattr(padding_masks, "numpy"):
+        padding_masks = padding_masks.numpy()
+        
+    # Pool features by taking the mean over the time dimension for valid timesteps
+    pooled_features = np.ma.masked_array(
+        targets, mask=np.broadcast_to(~padding_masks[:, :, None], targets.shape)
+    ).mean(axis=1).data
+    
+    # 2. Denormalize the data back to physical units
+    norm_path = os.path.join(exp_dir, "norm_constants.npy")
+    if not os.path.exists(norm_path):
+        norm_path = os.path.join(exp_dir, "eval", "norm_constants.npy")
+        
+    if os.path.exists(norm_path):
+        logger.info(f"Denormalizing features using {norm_path}")
+        norm = np.load(norm_path, allow_pickle=True).item()
+        if "min_val" in norm:
+            min_val = norm["min_val"]
+            max_val = norm["max_val"]
+            pooled_features = pooled_features * ((max_val - min_val) + 1e-8) + min_val
+        elif "mean" in norm:
+            mean = norm["mean"]
+            std = norm["std"]
+            pooled_features = pooled_features * (std + 1e-8) + mean
+    else:
+        logger.warning(f"No norm_constants.npy found in {exp_dir}. Using raw values, which may be scaled!")
+    
+    # 3. Calculate median physical stats for each cluster
+    cluster_stats = {}
+    for cid in unique_clusters:
+        idx = (cluster_labels == cid)
+        cluster_data = pooled_features[idx]
+        
+        # 3: Acceleration, 5: AngularVelocity, 7: LaneDist
+        med_accel = np.median(cluster_data[:, 3])
+        med_abs_ang_vel = np.median(np.abs(cluster_data[:, 5]))
+        med_abs_lane_dist = np.median(np.abs(cluster_data[:, 7]))
+        
+        cluster_stats[cid] = {
+            "accel": med_accel,
+            "abs_ang_vel": med_abs_ang_vel,
+            "abs_lane_dist": med_abs_lane_dist
+        }
+        logger.info(f"  Cluster {cid:3d} Stats -> Accel: {med_accel:.4f}, AbsAngVel: {med_abs_ang_vel:.4f}, AbsLaneDist: {med_abs_lane_dist:.4f}")
+
+    # 4. Heuristic Assignment (Physical Thresholds)
     cluster_to_intent = {}
-    for i, cid in enumerate(unique_clusters):
-        cluster_to_intent[cid] = i % 4
+    for cid in unique_clusters:
+        stats = cluster_stats[cid]
+        accel = stats["accel"]
+        abs_ang_vel = stats["abs_ang_vel"]
+        abs_lane_dist = stats["abs_lane_dist"]
+        
+        # Assign intent based on physics (priority ordered for safety)
+        if abs_ang_vel > 0.05:          # Significant angular rotation -> Turn
+            intent = 1
+        elif accel < -1.0:              # Hard deceleration -> Brake
+            intent = 3
+        elif abs_lane_dist > 1.0:       # Lateral displacement without extreme turn -> Exit/Lane change
+            intent = 2
+        else:                           # Default stable cruising -> MaintainLane
+            intent = 0
+            
+        cluster_to_intent[cid] = intent
 
-    # Print the mapping for the user to review / override
-    logger.info("Cluster → Intent mapping (review and adjust manually if needed):")
-    for cid, intent in cluster_to_intent.items():
+    logger.info("Cluster → Intent Final Mapping:")
+    for cid in unique_clusters:
+        intent = cluster_to_intent[cid]
         logger.info(f"  HDBSCAN cluster {cid:3d}  →  {intent} ({VEHICLE_LABELS[intent]})")
 
     intent_labels = np.zeros(len(cluster_labels), dtype=np.int64)
     for idx, cid in enumerate(cluster_labels):
         if cid == -1:
-            intent_labels[idx] = 0   # noise → MaintainLane (default stable)
+            intent_labels[idx] = 0   # noise → MaintainLane
         else:
             intent_labels[idx] = cluster_to_intent[cid]
 
@@ -229,7 +295,7 @@ def attach_labels(
         )
 
     # 3. Map HDBSCAN clusters → intent labels (0-3)
-    intent_labels = hdbscan_to_intent(cluster_labels)
+    intent_labels = hdbscan_to_intent(cluster_labels, output_data, exp_dir)
 
     # 4. Save intent_labels.pt
     labels_path = save_intent_labels(intent_labels, output_data, output_dir)

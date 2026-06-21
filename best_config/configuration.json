@@ -6,7 +6,6 @@
     "comment": "",
     "config_filepath": null,
     "console": false,
-    "data_chunk_len": 60,
     "data_class": "sind",
     "data_dir": "./resources/VANET_data/raw/",
     "data_normalization": "minmax",

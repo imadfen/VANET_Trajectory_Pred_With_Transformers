@@ -120,7 +120,7 @@ def main():
     md_lines.append(f"- **Specific Vehicles Evaluated:** {len(valid_basenames)}")
     md_lines.append("")
     md_lines.append("## Metrics Comparison")
-    md_lines.append("| Metric | Baseline PoC (Unoptimized) | Optimized Simulation (AI Decisions) | Improvement |")
+    md_lines.append("| Metric | Baseline PoC (Unoptimized) | Optimized Simulation (AI Decisions) | Change |")
     md_lines.append("|--------|----------------------------|-------------------------------------|-------------|")
     
     for key in baseline_metrics.keys():

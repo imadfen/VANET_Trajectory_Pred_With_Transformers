@@ -59,75 +59,81 @@ def run(config, session=None):
 
     if config["eval_only"]:
         logger.info("Evaluating model ...")
-        evaluate(val_evaluator, config, save_embeddings=config["save_embeddings"], save_data=True)
+        aggr_metrics_val, per_batch_val = evaluate(val_evaluator, config, save_embeddings=config["save_embeddings"], save_data=True)
+        target_per_batch = per_batch_val
+        eval_split_name = "val"
         if test_evaluator is not None:
             logger.info("Evaluating on Test Set ...")
             aggr_metrics_test, per_batch_test = evaluate(test_evaluator, config, save_embeddings=config["save_embeddings"], save_data=True)
-            # Dump test predictions to a CSV for charting
-            import pandas as pd
-            import numpy as np
+            if len(per_batch_test.get("predictions", [])) > 0:
+                target_per_batch = per_batch_test
+                eval_split_name = "test"
+        
+        # Dump predictions to a CSV for charting
+        import pandas as pd
+        import numpy as np
+        
+        logger.info(f"Exporting {eval_split_name} predictions to csv ...")
+        preds = np.concatenate(target_per_batch["predictions"], axis=0)
+        targets = np.concatenate(target_per_batch["targets"], axis=0)
+        masks = np.concatenate(target_per_batch["padding_masks"], axis=0)
+        
+        # Fetch IDs
+        ids_flat = []
+        for b_ids in target_per_batch["IDs"]:
+            ids_flat.extend(b_ids)
             
-            logger.info("Exporting test predictions to csv ...")
-            preds = np.concatenate(per_batch_test["predictions"], axis=0)
-            targets = np.concatenate(per_batch_test["targets"], axis=0)
-            masks = np.concatenate(per_batch_test["padding_masks"], axis=0)
+        # Inverse Normalization logic
+        if hasattr(data, 'min_val') and data.min_val is not None:
+            preds = preds * (data.max_val - data.min_val + 1e-8) + data.min_val
+            targets = targets * (data.max_val - data.min_val + 1e-8) + data.min_val
+        elif hasattr(data, 'mean') and data.mean is not None:
+            preds = preds * (data.std + 1e-8) + data.mean
+            targets = targets * (data.std + 1e-8) + data.mean
             
-            # Fetch IDs
-            ids_flat = []
-            for b_ids in per_batch_test["IDs"]:
-                ids_flat.extend(b_ids)
-                
-            # Inverse Normalization logic
-            if hasattr(data, 'min_val') and data.min_val is not None:
-                preds = preds * (data.max_val - data.min_val + 1e-8) + data.min_val
-                targets = targets * (data.max_val - data.min_val + 1e-8) + data.min_val
-            elif hasattr(data, 'mean') and data.mean is not None:
-                preds = preds * (data.std + 1e-8) + data.mean
-                targets = targets * (data.std + 1e-8) + data.mean
-                
-            records = []
-            # Assume X is index 0, Y is index 1
-            for i in range(len(preds)):
-                track_id = ids_flat[i]
-                active_len = int(np.sum(masks[i]))
-                true_traj = targets[i, :active_len, :2]
-                pred_traj = preds[i, :active_len, :2]
-                
-                if active_len > 0:
-                    distances = np.linalg.norm(true_traj - pred_traj, axis=1)
-                    ade = np.mean(distances)
-                    fde = distances[-1]
-                    rmse = np.sqrt(np.mean(distances**2))
-                else:
-                    distances, ade, fde, rmse = [], 0, 0, 0
-                
-                for t in range(active_len):
-                    records.append({
-                        "Trajectory_ID": track_id,
-                        "Time_Step": t,
-                        "True_X": true_traj[t, 0],
-                        "True_Y": true_traj[t, 1],
-                        "Pred_X": pred_traj[t, 0],
-                        "Pred_Y": pred_traj[t, 1],
-                        "Error_Delta": distances[t],
-                        "ADE_Track": ade,
-                        "FDE_Track": fde,
-                        "RMSE_Track": rmse,
-                        "Bounds_Area": 0.0, # Target Zonotope Reachable Set integration goes here
-                        "Missed_Boolean": False # Target Reachability evaluation Boolean goes here
-                    })
+        records = []
+        # Assume X is index 0, Y is index 1
+        for i in range(len(preds)):
+            track_id = ids_flat[i]
+            active_len = int(np.sum(masks[i]))
+            true_traj = targets[i, :active_len, :2]
+            pred_traj = preds[i, :active_len, :2]
             
-            df_export = pd.DataFrame(records)
-            export_path = os.path.join(config["output_dir"], f"{config['experiment_name']}_test_predictions_charting.csv")
-            df_export.to_csv(export_path, index=False)
-            logger.info(f"Charts data exported to {export_path}")
+            if active_len > 0:
+                distances = np.linalg.norm(true_traj - pred_traj, axis=1)
+                ade = np.mean(distances)
+                fde = distances[-1]
+                rmse = np.sqrt(np.mean(distances**2))
+            else:
+                distances, ade, fde, rmse = [], 0, 0, 0
             
-            # Print global spatial metric outcomes over Test
-            if len(df_export) > 0:
-                global_ade = df_export.drop_duplicates(subset=["Trajectory_ID"])["ADE_Track"].mean()
-                global_fde = df_export.drop_duplicates(subset=["Trajectory_ID"])["FDE_Track"].mean()
-                global_rmse = df_export.drop_duplicates(subset=["Trajectory_ID"])["RMSE_Track"].mean()
-                logger.info(f"--- SPATIAL TEST METRICS: ADE: {global_ade:.4f}m | FDE: {global_fde:.4f}m | RMSE: {global_rmse:.4f}m ---")
+            for t in range(active_len):
+                records.append({
+                    "Trajectory_ID": track_id,
+                    "Time_Step": t,
+                    "True_X": true_traj[t, 0],
+                    "True_Y": true_traj[t, 1],
+                    "Pred_X": pred_traj[t, 0],
+                    "Pred_Y": pred_traj[t, 1],
+                    "Error_Delta": distances[t],
+                    "ADE_Track": ade,
+                    "FDE_Track": fde,
+                    "RMSE_Track": rmse,
+                    "Bounds_Area": 0.0, # Target Zonotope Reachable Set integration goes here
+                    "Missed_Boolean": False # Target Reachability evaluation Boolean goes here
+                })
+        
+        df_export = pd.DataFrame(records)
+        export_path = os.path.join(config["output_dir"], f"{config['experiment_name']}_{eval_split_name}_predictions_charting.csv")
+        df_export.to_csv(export_path, index=False)
+        logger.info(f"Charts data exported to {export_path}")
+        
+        # Print global spatial metric outcomes
+        if len(df_export) > 0:
+            global_ade = df_export.drop_duplicates(subset=["Trajectory_ID"])["ADE_Track"].mean()
+            global_fde = df_export.drop_duplicates(subset=["Trajectory_ID"])["FDE_Track"].mean()
+            global_rmse = df_export.drop_duplicates(subset=["Trajectory_ID"])["RMSE_Track"].mean()
+            logger.info(f"--- SPATIAL {eval_split_name.upper()} METRICS: ADE: {global_ade:.4f}m | FDE: {global_fde:.4f}m | RMSE: {global_rmse:.4f}m ---")
     else:
         logger.info("Starting training...")
 
