@@ -121,10 +121,8 @@ class SINDData(BaseData):
     def load_data(self):
             self.file_paths = self._gather_data_paths(self.config["data_dir"], pattern=self.config["pattern"])
             self.max_seq_len = self.config["data_chunk_len"] if self.config["data_chunk_len"] > 0 else 50
-            # eval_subset takes precedence during clustering runs, then data_subset
             max_chunks = self.config.get("eval_subset") or self.config.get("data_subset") or None
 
-            # ── Infer feature names by majority vote across first 20 files ──────
             import pandas as pd
             from collections import Counter
             _probe_paths = self.file_paths[:20]
@@ -134,7 +132,6 @@ class SINDData(BaseData):
                 _h = pd.read_csv(_p, nrows=0)
                 _cols = tuple(c for c in _h.columns if c != "Time")
                 _col_counts[_cols] += 1
-            # Use the most common column set
             _winner_cols = _col_counts.most_common(1)[0][0]
             self.feature_names = list(_winner_cols)
             logger.info(
@@ -167,7 +164,6 @@ class SINDData(BaseData):
                         end_idx = start_idx + self.max_seq_len
                         chunk = track_data[start_idx:end_idx]
                         if len(chunk) > 1:
-                            # Pad short trailing chunks to uniform length
                             if len(chunk) < self.max_seq_len:
                                 pad = np.zeros(
                                     (self.max_seq_len - len(chunk), len(self.feature_names)),

@@ -32,7 +32,6 @@ def load_data(config, logger, save_data=True):
     my_data = data_class(config, n_proc=config["n_proc"])
     my_data.load_data()
 
-    # ── Fresh split always ──────────────────────────────────────────────────
     if config["val_ratio"] == 1:
         val_indices   = my_data.all_IDs
         train_indices = []
@@ -49,7 +48,6 @@ def load_data(config, logger, save_data=True):
     logger.info("{} samples will be used for validation".format(len(val_indices)))
     logger.info("{} samples will be used for testing".format(len(test_indices)))
 
-    # ── Memory guard: sub-sample val for eval/clustering if requested ───────
     eval_subset = config.get("eval_subset")
     if eval_subset is not None:
         if eval_subset < len(val_indices):
@@ -94,7 +92,6 @@ def load_data(config, logger, save_data=True):
 
         if hasattr(my_data, "all_chunks"):
 
-            # ── Try to load saved norm constants ───────────────────────────
             norm_loaded = False
             norm_path = None
             for candidate in [
@@ -131,7 +128,6 @@ def load_data(config, logger, save_data=True):
                 logger.info(f"Restored normalization constants ({norm['norm_type']})")
                 norm_loaded = True
 
-            # ── Compute fresh if not loaded ─────────────────────────────────
             if not norm_loaded:
                 norm_indices = train_indices if len(train_indices) > 0 else val_indices
                 logger.info(

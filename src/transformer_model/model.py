@@ -70,7 +70,6 @@ def create_model(config, train_loader, val_loader, test_loader, data, logger, de
         )
     model.to(device)
     
-    # ── Enable DataParallel to saturate kaggle's T4x2 environment automatically ──
     if torch.cuda.device_count() > 1 and device != "cpu":
         model = torch.nn.DataParallel(model)
         logger.info(f"Successfully activated DataParallel across {torch.cuda.device_count()} GPUs!")
@@ -108,7 +107,6 @@ def create_model(config, train_loader, val_loader, test_loader, data, logger, de
         console=config["console"],
     ) if test_loader is not None else None
 
-    # — Step 2.5: load cluster-derived intent labels if available ————
     labels_path = config.get("intent_labels_path")
     if labels_path and os.path.exists(labels_path) and config.get("intent_weight", 0.0) > 0:
         intent_labels_tensor = torch.load(labels_path, map_location="cpu")
@@ -190,7 +188,7 @@ def validate(
     with torch.no_grad():
         aggr_metrics, per_batch = val_evaluator.evaluate(epoch_num=epoch, keep_all=True)
     
-    del per_batch  # <--- CRITICAL FIX 1: free per_batch immediately to avoid leaking entire validation dataset every epoch
+    del per_batch
     eval_runtime = time.time() - eval_start_time
     logger.info(
         "Validation runtime: {} hours, {} minutes, {} seconds\n".format(
@@ -331,7 +329,6 @@ def train(
         
         if config["hyperparameter_tuning"]:
             from ray.tune import Checkpoint
-            # Use a dedicated, persistent folder instead of tempfile to ensure Ray Tune can access it asynchronously
             checkpoint_dir = os.path.join(config["save_dir"], "ray_checkpoint")
             os.makedirs(checkpoint_dir, exist_ok=True)
             checkpoint_path = os.path.join(checkpoint_dir, "model.pth")
@@ -419,7 +416,6 @@ class BaseModel(object):
         dyn_string = template.format(*content)
         dyn_string = prefix + dyn_string
         
-        # Lock output to a single refreshing line to prevent Kaggle console UI crash
         print(f"\r{dyn_string}", end="", flush=True)
         if i_batch == total_batches - 1:
             print()
@@ -449,17 +445,15 @@ class UnsupervisedAttentionModel(BaseModel):
 
             predictions, intent_logits, _, _ = self.encoder(
                 X.to(self.device), padding_masks
-            )  # (batch_size, padded_length, feat_dim)
+            )
 
-            # ── Imputation MSE loss ───────────────────────────────────────────
             loss = self.loss_module(
                 predictions, targets, padding_masks.unsqueeze(-1)
-            )  # (num_active,) individual squared errors
+            )
 
             batch_loss = torch.sum(loss)
             mean_loss = batch_loss / len(loss)
 
-            # ── Optional intent CE loss (Loop B supervised fine-tuning) ───────
             total_loss = mean_loss
             if self.intent_weight > 0 and hasattr(self, "intent_labels"):
                 intent_labels = self.intent_labels[list(IDs)].to(self.device)

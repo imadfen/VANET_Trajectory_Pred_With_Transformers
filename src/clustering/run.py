@@ -1,15 +1,3 @@
-"""
-Phase 2 — VANET Behavior Clustering Pipeline
-
-Orchestrates: load model → extract embeddings → HDBSCAN cluster → save AnnoyModel index.
-
-Usage (from project root):
-    python -m src.clustering.run \
-        --folder experiments \
-        --model_file VANETDataset_pretrained_2026-XX-XX_XX-XX-XX_XXX \
-        --save_embeddings
-"""
-
 import torch
 import numpy as np
 import argparse
@@ -54,13 +42,9 @@ VANET_FEATURE_NAMES = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Data loading
-# ---------------------------------------------------------------------------
+
 
 def load_embeddings_from_pt(output_dir: str):
-    """Load the per_batch tensors saved by the val evaluator."""
-    # load from .pt originally
     pt_file = torch.load(os.path.join(output_dir, "output_data.pt"), map_location="cpu")
 
     def to_numpy(t):
@@ -115,9 +99,7 @@ def load_config(
     return config
 
 
-# ---------------------------------------------------------------------------
-# Nearest-neighbor cluster lookup (used by Phase 3 / simulation)
-# ---------------------------------------------------------------------------
+
 
 def get_embedding(config: dict, data_chunks: np.ndarray, chunk_indices: list):
     """Extract embeddings from the pre-trained encoder for a set of chunks.
@@ -170,9 +152,7 @@ def get_cluster(config: dict, embedding: np.ndarray):
     return nn_model.get(embedding)
 
 
-# ---------------------------------------------------------------------------
-# Main clustering pipeline
-# ---------------------------------------------------------------------------
+
 
 def run_clusters(
     config: dict = None,
@@ -206,7 +186,6 @@ def run_clusters(
         f"Loaded embeddings: {all_embeddings.shape}, targets: {all_targets.shape}"
     )
     
-    # Free what clustering doesn't need
     del all_predictions, target_masks, intent_logits
 
     cluster_instance = HDBSCANCluster(
@@ -225,7 +204,6 @@ def run_clusters(
             save_data=save_data,
             show_clusters=show_clusters,
         )
-        # Build and save the Annoy nearest-neighbour index over cluster centroids
         nn_model = AnnoyModel(config=config)
         nn_model.build()
     else:
@@ -233,9 +211,7 @@ def run_clusters(
         return data
 
 
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run VANET behavior clustering (Phase 2).")

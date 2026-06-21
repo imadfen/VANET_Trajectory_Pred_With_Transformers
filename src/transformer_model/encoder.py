@@ -280,13 +280,8 @@ class TSTransformerEncoder(nn.Module):
         self.act      = _get_activation_fn(activation)
         self.dropout1 = nn.Dropout(dropout)
 
-        # ── Reconstruction head (imputation) ──────────────────────────────────
         self.output_layer = nn.Linear(embedding_dim, feat_dim)
 
-        # ── Intent classification head (Loop B) ───────────────────────────────
-        # Mean-pool sequence → num_intents logits.
-        # intent_weight=0 during unsupervised pre-training so this head adds
-        # zero loss, but is still shaped and ready for supervised fine-tuning.
         self.intent_head = nn.Linear(embedding_dim, num_intents)
 
         self.feat_dim = feat_dim
@@ -308,7 +303,6 @@ class TSTransformerEncoder(nn.Module):
         inp = self.project_inp(X) * math.sqrt(self.embedding_dim)
         inp = self.pos_enc(inp)
 
-        # ── Run encoder, optionally collecting per-layer attention maps ────────
         attn_maps: list = []
         if return_attn and self._use_batch_norm:
             hidden = inp
@@ -331,10 +325,8 @@ class TSTransformerEncoder(nn.Module):
         embeddings = output
         output = self.dropout1(output)
 
-        # ── Reconstruction head ───────────────────────────────────────────────
         recon_output = self.output_layer(output)  # (B, T, feat_dim)
 
-        # ── Intent head: mean-pool over real (non-padding) time steps ─────────
         pad_float = padding_masks.unsqueeze(-1).float()            # (B, T, 1)
         pooled = (output * pad_float).sum(dim=1) / pad_float.sum(dim=1).clamp(min=1)
         intent_logits = self.intent_head(pooled)                   # (B, num_intents)
