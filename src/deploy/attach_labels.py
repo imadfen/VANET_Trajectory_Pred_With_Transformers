@@ -27,7 +27,6 @@ VEHICLE_LABELS = {
 
 
 def load_output_data(output_dir: str):
-    """Load Phase 1 output_data.pt."""
     pt_path = os.path.join(output_dir, "output_data.pt")
     if not os.path.exists(pt_path):
         raise FileNotFoundError(
@@ -40,17 +39,13 @@ def load_output_data(output_dir: str):
 
 
 def load_cluster_assignments(clusters_dir: str):
-    """Load HDBSCAN cluster label array saved by Phase 2 run.py.
-
-    Returns np.ndarray of shape (N_chunks,) with cluster IDs (-1 = noise).
-    """
     import pickle
     label_path = os.path.join(clusters_dir, "cluster_labels.pkl")
     
     if not os.path.exists(label_path):
         raise FileNotFoundError(
             f"cluster_labels.pkl not found at: {clusters_dir}\n"
-            "Run Phase 2 (src/clustering/run.py) first."
+            "Run (src/clustering/run.py) first."
         )
             
     with open(label_path, "rb") as f:
@@ -83,7 +78,6 @@ def hdbscan_to_intent(cluster_labels: np.ndarray, output_data: dict, exp_dir: st
 
     logger.info(f"Mapping {n_clusters} HDBSCAN clusters → 4 intent classes using physical thresholds")
 
-    # 1. Extract and pool physical features
     targets = output_data["targets"]
     padding_masks = output_data["padding_masks"]
     
@@ -92,12 +86,10 @@ def hdbscan_to_intent(cluster_labels: np.ndarray, output_data: dict, exp_dir: st
     if hasattr(padding_masks, "numpy"):
         padding_masks = padding_masks.numpy()
         
-    # Pool features by taking the mean over the time dimension for valid timesteps
     pooled_features = np.ma.masked_array(
         targets, mask=np.broadcast_to(~padding_masks[:, :, None], targets.shape)
     ).mean(axis=1).data
     
-    # 2. Denormalize the data back to physical units
     norm_path = os.path.join(exp_dir, "norm_constants.npy")
     if not os.path.exists(norm_path):
         norm_path = os.path.join(exp_dir, "eval", "norm_constants.npy")
@@ -116,13 +108,11 @@ def hdbscan_to_intent(cluster_labels: np.ndarray, output_data: dict, exp_dir: st
     else:
         logger.warning(f"No norm_constants.npy found in {exp_dir}. Using raw values, which may be scaled!")
     
-    # 3. Calculate median physical stats for each cluster
     cluster_stats = {}
     for cid in unique_clusters:
         idx = (cluster_labels == cid)
         cluster_data = pooled_features[idx]
         
-        # 3: Acceleration, 5: AngularVelocity, 7: LaneDist
         med_accel = np.median(cluster_data[:, 3])
         med_abs_ang_vel = np.median(np.abs(cluster_data[:, 5]))
         med_abs_lane_dist = np.median(np.abs(cluster_data[:, 7]))
@@ -134,7 +124,6 @@ def hdbscan_to_intent(cluster_labels: np.ndarray, output_data: dict, exp_dir: st
         }
         logger.info(f"  Cluster {cid:3d} Stats -> Accel: {med_accel:.4f}, AbsAngVel: {med_abs_ang_vel:.4f}, AbsLaneDist: {med_abs_lane_dist:.4f}")
 
-    # 4. Heuristic Assignment (Physical Thresholds)
     cluster_to_intent = {}
     for cid in unique_clusters:
         stats = cluster_stats[cid]
@@ -142,7 +131,6 @@ def hdbscan_to_intent(cluster_labels: np.ndarray, output_data: dict, exp_dir: st
         abs_ang_vel = stats["abs_ang_vel"]
         abs_lane_dist = stats["abs_lane_dist"]
         
-        # Assign intent based on physics (priority ordered for safety)
         if abs_ang_vel > 0.05:          # Significant angular rotation -> Turn
             intent = 1
         elif accel < -1.0:              # Hard deceleration -> Brake
@@ -204,7 +192,7 @@ def patch_config(config_path: str, intent_weight: float, labels_path: str):
         config = json.load(f)
 
     config["intent_weight"] = intent_weight
-    config["intent_labels_path"] = labels_path   # new key for model runner
+    config["intent_labels_path"] = labels_path  
 
     with open(config_path, "w") as f:
         json.dump(config, f, indent=4)
