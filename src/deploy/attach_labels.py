@@ -1,5 +1,3 @@
-
-
 import sys
 import os
 import json
@@ -25,8 +23,8 @@ VEHICLE_LABELS = {
 }
 
 
-
 def load_output_data(output_dir: str):
+    """Load Phase 1 output_data.pt."""
     pt_path = os.path.join(output_dir, "output_data.pt")
     if not os.path.exists(pt_path):
         raise FileNotFoundError(
@@ -39,13 +37,17 @@ def load_output_data(output_dir: str):
 
 
 def load_cluster_assignments(clusters_dir: str):
+    """Load HDBSCAN cluster label array saved by Phase 2 run.py.
+
+    Returns np.ndarray of shape (N_chunks,) with cluster IDs (-1 = noise).
+    """
     import pickle
     label_path = os.path.join(clusters_dir, "cluster_labels.pkl")
     
     if not os.path.exists(label_path):
         raise FileNotFoundError(
             f"cluster_labels.pkl not found at: {clusters_dir}\n"
-            "Run (src/clustering/run.py) first."
+            "Run Phase 2 (src/clustering/run.py) first."
         )
             
     with open(label_path, "rb") as f:
@@ -78,6 +80,7 @@ def hdbscan_to_intent(cluster_labels: np.ndarray, output_data: dict, exp_dir: st
 
     logger.info(f"Mapping {n_clusters} HDBSCAN clusters → 4 intent classes using physical thresholds")
 
+    # 1. Extract and pool physical features
     targets = output_data["targets"]
     padding_masks = output_data["padding_masks"]
     
@@ -86,10 +89,12 @@ def hdbscan_to_intent(cluster_labels: np.ndarray, output_data: dict, exp_dir: st
     if hasattr(padding_masks, "numpy"):
         padding_masks = padding_masks.numpy()
         
+    # Pool features by taking the mean over the time dimension for valid timesteps
     pooled_features = np.ma.masked_array(
         targets, mask=np.broadcast_to(~padding_masks[:, :, None], targets.shape)
     ).mean(axis=1).data
     
+    # 2. Denormalize the data back to physical units
     norm_path = os.path.join(exp_dir, "norm_constants.npy")
     if not os.path.exists(norm_path):
         norm_path = os.path.join(exp_dir, "eval", "norm_constants.npy")
@@ -108,11 +113,13 @@ def hdbscan_to_intent(cluster_labels: np.ndarray, output_data: dict, exp_dir: st
     else:
         logger.warning(f"No norm_constants.npy found in {exp_dir}. Using raw values, which may be scaled!")
     
+    # 3. Calculate median physical stats for each cluster
     cluster_stats = {}
     for cid in unique_clusters:
         idx = (cluster_labels == cid)
         cluster_data = pooled_features[idx]
         
+        # 3: Acceleration, 5: AngularVelocity, 7: LaneDist
         med_accel = np.median(cluster_data[:, 3])
         med_abs_ang_vel = np.median(np.abs(cluster_data[:, 5]))
         med_abs_lane_dist = np.median(np.abs(cluster_data[:, 7]))
@@ -124,6 +131,7 @@ def hdbscan_to_intent(cluster_labels: np.ndarray, output_data: dict, exp_dir: st
         }
         logger.info(f"  Cluster {cid:3d} Stats -> Accel: {med_accel:.4f}, AbsAngVel: {med_abs_ang_vel:.4f}, AbsLaneDist: {med_abs_lane_dist:.4f}")
 
+    # 4. Heuristic Assignment (Physical Thresholds)
     cluster_to_intent = {}
     for cid in unique_clusters:
         stats = cluster_stats[cid]
@@ -131,6 +139,7 @@ def hdbscan_to_intent(cluster_labels: np.ndarray, output_data: dict, exp_dir: st
         abs_ang_vel = stats["abs_ang_vel"]
         abs_lane_dist = stats["abs_lane_dist"]
         
+        # Assign intent based on physics (priority ordered for safety)
         if abs_ang_vel > 0.05:          # Significant angular rotation -> Turn
             intent = 1
         elif accel < -1.0:              # Hard deceleration -> Brake
@@ -168,10 +177,14 @@ def save_intent_labels(intent_labels: np.ndarray, output_data: dict, output_dir:
     """Save intent_labels.pt mapped explicitly via global IDs."""
     out_path = os.path.join(output_dir, "intent_labels.pt")
     
+    # 1. Get raw dataset IDs for each labeled chunk
     chunk_ids = output_data["IDs"]
     if hasattr(chunk_ids, "numpy"):
         chunk_ids = chunk_ids.numpy()
         
+    # 2. Build a globally spanning sparse tensor defaulting to -100
+    # PyTorch's F.cross_entropy defaults to ignore_index=-100 natively.
+    # Therefore, any index without a label inherently skips gradient backprop without punishing the network!
     max_id = max(chunk_ids) if len(chunk_ids) > 0 else 0
     safe_tensor_size = max(1000000, max_id + 500000)
     
@@ -180,6 +193,7 @@ def save_intent_labels(intent_labels: np.ndarray, output_data: dict, output_dir:
     
     torch.save(sparse_intent_labels, out_path)
     
+    # Clean up heavy sparse tensors instantly
     del sparse_intent_labels, chunk_ids
     
     logger.info(f"Saved sparse global intent labels mapped to IDs → {out_path}")
@@ -192,7 +206,7 @@ def patch_config(config_path: str, intent_weight: float, labels_path: str):
         config = json.load(f)
 
     config["intent_weight"] = intent_weight
-    config["intent_labels_path"] = labels_path  
+    config["intent_labels_path"] = labels_path   # new key for model runner
 
     with open(config_path, "w") as f:
         json.dump(config, f, indent=4)
@@ -202,7 +216,6 @@ def patch_config(config_path: str, intent_weight: float, labels_path: str):
         f"  intent_weight       = {intent_weight}\n"
         f"  intent_labels_path  = {labels_path}"
     )
-
 
 
 
@@ -221,6 +234,7 @@ def attach_labels(
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"configuration.json not found at: {config_path}")
 
+    # 1. Load output to verify chunk count
     output_data   = load_output_data(output_dir)
     
     if isinstance(output_data["embeddings"], list):
@@ -230,31 +244,34 @@ def attach_labels(
         
     logger.info(f"Total chunks in output_data.pt: {n_chunks}")
 
+    # 2. Load cluster assignments
     cluster_labels = load_cluster_assignments(clusters_dir)
 
     if len(cluster_labels) != n_chunks:
         raise ValueError(
             f"Mismatch: output_data.pt has {n_chunks} chunks, "
             f"but cluster_labels.npy has {len(cluster_labels)} entries.\n"
-            "Re-run Phase 2 on the same experiment folder."
+            "Re-run on the same experiment folder."
         )
 
+    # 3. Map HDBSCAN clusters → intent labels (0-3)
     intent_labels = hdbscan_to_intent(cluster_labels, output_data, exp_dir)
 
+    # 4. Save intent_labels.pt
     labels_path = save_intent_labels(intent_labels, output_data, output_dir)
     
+    # 5. Clear aggressive memory blocks explicitly 
     del output_data, cluster_labels
 
+    # 6. Patch configuration.json
     patch_config(config_path, intent_weight, labels_path)
 
     logger.info("✅Done!")
 
 
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Step 2.5: attach cluster-derived intent labels to the "
+        description="attach cluster-derived intent labels to the "
                     "experiment so main.py can fine-tune the Intent Head."
     )
     parser.add_argument("--folder",       type=str, default="experiments",
