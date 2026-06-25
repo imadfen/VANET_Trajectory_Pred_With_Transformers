@@ -74,12 +74,16 @@ REVERSED_LABELS = {v: k for k, v in VEHICLE_LABELS.items()}
 # ---------------------------------------------------------------------------
 
 def get_initial_conditions(traj_chunk: np.ndarray):
-    """Extract (pos, vel) from the last row of a (seq_len, 51) VANET chunk."""
+    """Extract (pos, vel) from the last row of a (seq_len, 51) VANET chunk.
+
+    OMNeT++/SUMO convention: Heading is clockwise from North.
+    vx = speed * sin(heading),  vy = -speed * cos(heading)
+    """
     last = traj_chunk[-1]
     pos = np.array([last[IDX_X], last[IDX_Y]])
     speed   = float(last[IDX_SPEED])
-    heading = float(last[IDX_HEADING])
-    vel = np.array([speed * np.cos(heading), speed * np.sin(heading)])
+    heading = np.radians(float(last[IDX_HEADING]))
+    vel = np.array([speed * np.sin(heading), -speed * np.cos(heading)])
     return pos, vel
 
 
@@ -111,7 +115,13 @@ def reachability_for_specific_cluster(
     data : dict  – output of separate_data_to_class(...)
     config : dict
     """
-    input_len = np.array(list(data.values())[0]).shape[1]
+    # Get sequence length from the target cluster (or first non-empty cluster)
+    _ref = data.get(cluster_id)
+    if _ref is None or len(_ref) == 0:
+        _ref = next((v for v in data.values() if len(v) > 0), None)
+    if _ref is None:
+        return None
+    input_len = np.array(_ref).shape[1]
     N_reach = input_len - 1
 
     # Vehicle-appropriate noise and initial set
@@ -165,9 +175,12 @@ def reachability_for_specific_cluster(
             R_base.color = COLORS[2]
 
     if not suppress_prints:
-        logger.info(f"Reachable set area: {zonotope_area(R):.4f} m²")
-        if R_base is not None:
-            logger.info(f"Baseline area: {zonotope_area(R_base):.4f} m²")
+        try:
+            logger.info(f"Reachable set area: {zonotope_area(R):.4f} m²")
+            if R_base is not None:
+                logger.info(f"Baseline area: {zonotope_area(R_base):.4f} m²")
+        except Exception as e:
+            logger.warning(f"Could not compute zonotope area (degenerate shape): {e}")
 
     z.color = COLORS[3]
     zonos = [R_base, R, z] if (baseline and R_base) else [R, z]

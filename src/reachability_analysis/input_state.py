@@ -2,7 +2,8 @@
 Vehicle state vector utilities for Phase 3 reachability analysis.
 
 State vector: [X, Y, Speed, Heading]  — indices (0, 1, 2, 4) from the 51-feature VANET vector.
-Velocity is derived as (Speed * cos(Heading), Speed * sin(Heading)).
+Velocity is derived using OMNeT++/SUMO convention: (Speed * sin(Heading), -Speed * cos(Heading)).
+Heading is clockwise from North (Y-axis), stored in degrees in the raw/denormalized data.
 """
 
 import pypolycontain as pp
@@ -22,7 +23,7 @@ VEHICLE_LABELS = {
 IDX_X       = 0
 IDX_Y       = 1
 IDX_SPEED   = 2
-IDX_HEADING = 4   # radians
+IDX_HEADING = 4   # degrees in raw/denormalized data (OMNeT++/SUMO convention: clockwise from North)
 
 
 # ---------------------------------------------------------------------------
@@ -96,10 +97,14 @@ def structure_input_data_for_clusters(
 # ---------------------------------------------------------------------------
 
 def _vel_from_row(row: np.ndarray) -> np.ndarray:
-    """Derive 2-D velocity vector from Speed and Heading (vehicle kinematics)."""
+    """Derive 2-D velocity vector from Speed and Heading (vehicle kinematics).
+
+    OMNeT++/SUMO convention: Heading is clockwise from North (Y-axis).
+    vx = speed * sin(heading),  vy = -speed * cos(heading)
+    """
     speed   = row[IDX_SPEED]
-    heading = row[IDX_HEADING]
-    return np.array([speed * np.cos(heading), speed * np.sin(heading)])
+    heading = np.radians(row[IDX_HEADING])
+    return np.array([speed * np.sin(heading), -speed * np.cos(heading)])
 
 
 def create_io_state(
@@ -125,14 +130,21 @@ def create_io_state(
     classification : int or list[int]
     """
     if isinstance(classification, list):
-        _data = np.concatenate(
-            [data[cls] for cls in classification if cls in data], axis=0
-        )
+        _arrays_to_concat = [data[cls] for cls in classification if cls in data and len(data[cls]) > 0]
+        if not _arrays_to_concat:
+            return None
+        _data = np.concatenate(_arrays_to_concat, axis=0)
     else:
         _data = data.get(classification, np.array([]))
 
     if _data.size == 0:
         return None
+
+    # CRITICAL MEMORY CAP: If _data has too many trajectories, create_M_w will attempt to allocate 100+ GB of RAM.
+    # Cap to 150 trajectories (which yields ~7500 samples), enough for data-driven reachability rank conditions.
+    if _data.shape[0] > 150:
+        idx = np.random.choice(_data.shape[0], 150, replace=False)
+        _data = _data[idx]
 
     X_m, X_p, U = np.array([]), np.array([]), np.array([])
     _pos_poly = Polygon(pp.to_V(measurement))
@@ -142,14 +154,15 @@ def create_io_state(
             np.arctan2(vel[1], vel[0]) - (np.pi / 8),
             np.arctan2(vel[1], vel[0]) + (np.pi / 8),
         ])
-        if angle_filter
+        if angle_filter and np.linalg.norm(vel) > 1e-6
         else False
     )
 
     for traj in _data:
         # traj: (seq_len, 23)  — extract X, Y and derived vx, vy
-        _x = traj[:, IDX_X]
-        _y = traj[:, IDX_Y]
+        # Center historical data to origin to prevent catastrophic numerical instability in pinv
+        _x = traj[:, IDX_X] - traj[0, IDX_X]
+        _y = traj[:, IDX_Y] - traj[0, IDX_Y]
         vel_vectors = np.array([_vel_from_row(row) for row in traj])  # (seq_len, 2)
         _vx, _vy = vel_vectors[:, 0], vel_vectors[:, 1]
 

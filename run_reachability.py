@@ -67,6 +67,33 @@ def main(n_samples: int = 1, show_plot: bool = False, run_eval: bool = False, sa
     data_filtered   = filter_paddings(data_raw, paddings)
     labels_filtered = filter_paddings(labels_arr, paddings)
 
+    # -----------------------------------------------------------------------
+    # CRITICAL FIX: Denormalize data to physical units (meters, m/s, rad)
+    # -----------------------------------------------------------------------
+    # If the data is normalized between 0-1, the physical equations (Speed * cos(Heading))
+    # break, causing the LTI pseudo-inverse M_sigma to explode and overflow to NaN.
+    ROOT_PROJECT = os.path.abspath(os.path.dirname(__file__))
+    exp_dir = os.path.join(ROOT_PROJECT, FOLDER, MODEL_FILE)
+    norm_path = os.path.join(exp_dir, "norm_constants.npy")
+    if not os.path.exists(norm_path):
+        norm_path = os.path.join(os.path.join(ROOT_PROJECT, FOLDER, CLUSTER_SOURCE), "norm_constants.npy")
+        if not os.path.exists(norm_path):
+            norm_path = os.path.join(os.path.join(ROOT_PROJECT, FOLDER, CLUSTER_SOURCE), "eval", "norm_constants.npy")
+    
+    if os.path.exists(norm_path):
+        logger.info(f"Denormalizing features to physical units using {norm_path}")
+        norm = np.load(norm_path, allow_pickle=True).item()
+        if "min_val" in norm:
+            min_val = norm["min_val"]
+            max_val = norm["max_val"]
+            data_filtered = data_filtered * ((max_val - min_val) + 1e-8) + min_val
+        elif "mean" in norm:
+            mean = norm["mean"]
+            std = norm["std"]
+            data_filtered = data_filtered * (std + 1e-8) + mean
+    else:
+        logger.warning("No norm_constants.npy found! Reachability math may overflow if data is normalized.")
+
     # Remove HDBSCAN noise points (label == -1) — they have no meaningful cluster
     noise_mask      = labels_filtered != -1
     data_filtered   = data_filtered[noise_mask]
@@ -77,9 +104,18 @@ def main(n_samples: int = 1, show_plot: bool = False, run_eval: bool = False, sa
     logger.info(f"Found {len(cluster_ids)} clusters (noise removed): {cluster_ids[:10]}...")
     logger.info(f"Total trajectory chunks available (after noise removal): {len(data_filtered)}")
 
-    # Pick n_samples random trajectory chunks to use as "current vehicle state"
+    # Filter out stationary trajectories (speed=0 for all timesteps).
+    # ~91% of the data are parked cars with zero dynamics, which cause the LTI
+    # system identification to produce degenerate (all-zero) matrices.
+    from src.reachability_analysis.input_state import IDX_SPEED
+    moving_mask = data_filtered[:, :, IDX_SPEED].max(axis=1) > 0.001
+    moving_indices = np.where(moving_mask)[0]
+    logger.info(f"Moving trajectories (speed > 0): {len(moving_indices)} / {len(data_filtered)}")
+
+    # Pick n_samples random trajectory chunks from MOVING vehicles only
     rng     = np.random.default_rng(seed=42)
-    indices = rng.choice(len(data_filtered), size=min(n_samples, len(data_filtered)), replace=False)
+    sampled = rng.choice(moving_indices, size=min(n_samples, len(moving_indices)), replace=False)
+    indices = sampled
 
     reachable_sets_all = {}
     ground_truth_all   = {}
@@ -97,33 +133,67 @@ def main(n_samples: int = 1, show_plot: bool = False, run_eval: bool = False, sa
 
         from src.reachability_analysis.simulation import (
             get_initial_conditions,
-            reachability_for_all_clusters,
+            reachability_for_specific_cluster,
         )
-        from src.reachability_analysis.input_state import separate_data_to_class
+        from src.reachability_analysis.input_state import separate_data_to_class, structure_input_data_for_clusters
 
-        data_by_cluster = separate_data_to_class(data_filtered, labels_filtered, size=n_clusters)
+        # Cap each cluster's sample size to prevent massive RAM spikes and extremely long evaluation times
+        # Use only moving trajectories for system identification (stationary = all-zero matrices)
+        data_moving = data_filtered[moving_mask]
+        labels_moving = labels_filtered[moving_mask]
+        data_capped, labels_capped = structure_input_data_for_clusters(data_moving, labels_moving, max_data=50)
+        data_by_cluster = separate_data_to_class(data_capped, labels_capped, size=n_clusters)
 
         pos, vel = get_initial_conditions(trajectory)
-        logger.info(f"  pos={pos},  vel={vel}")
+        real_pos = pos.copy()
+        pos_origin = np.array([0.0, 0.0])
+        logger.info(f"  pos={real_pos},  vel={vel}")
 
-        zonos, labels = reachability_for_all_clusters(
-            pos=pos,
+        # Compute reachability time-series specifically for the True Cluster to evaluate inclusion accuracy
+        # Compute at origin [0,0] to use Shift-Invariant kinematics, then shift back to global coordinates
+        result = reachability_for_specific_cluster(
+            pos=pos_origin,
             vel=vel,
-            config=config,
+            cluster_id=true_label,
             data=data_by_cluster,
-            cluster_ids=cluster_ids,
+            config=config,
             baseline=True,
-            show_plot=show_plot,
-            save_plot=save_path,
-            title=f"Trajectory {run_idx+1} | True cluster: {true_label}",
+            show_plot=False,
+            ax=None,
+            suppress_prints=False,
+            method=str(true_label)
         )
+
+        if result is None:
+            logger.warning("  Reachability failed (no data/constraints matched).")
+            continue
+            
+        ax, zonos, R_all, R_base_all = result
+
+        # Shift all calculated zonotopes back to the vehicle's true global position
+        for z in zonos:
+            z.x = z.x + real_pos.reshape(2, 1)
+        for z in R_all:
+            z.x = z.x + real_pos.reshape(2, 1)
+        if R_base_all is not None:
+            for z in R_base_all:
+                z.x = z.x + real_pos.reshape(2, 1)
+
+        if show_plot or save_path:
+            from src.reachability_analysis.operations import visualize_zonotopes
+            try:
+                visualize_zonotopes(zonos, save_plot=save_path, show=show_plot, title=f"Trajectory {run_idx+1} | True cluster: {true_label}")
+            except Exception as e:
+                logger.warning(f"  Could not visualize zonotopes (degenerate shape): {e}")
 
         # Store for inclusion accuracy evaluation
         # ground truth = future X,Y positions from this trajectory chunk
         from src.reachability_analysis.input_state import IDX_X, IDX_Y
         gt_xy = trajectory[:, [IDX_X, IDX_Y]]  # (seq_len, 2)
         ground_truth_all[run_idx] = gt_xy
-        reachable_sets_all[run_idx] = zonos   # list of zonotopes
+        
+        # Store the TIME SERIES reachable sets for inclusion evaluation
+        reachable_sets_all[run_idx] = R_all
 
     # Save pickles for inclusion accuracy
     vanet_dir = os.path.join(config["output_dir"], "VANET")
