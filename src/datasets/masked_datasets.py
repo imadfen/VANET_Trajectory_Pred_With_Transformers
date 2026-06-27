@@ -82,7 +82,7 @@ def collate_unsuperv(data, max_len=None):
     batch_size = len(data)
     features, masks, IDs = zip(*data)
 
-    # Stack and pad features and masks (convert 2D to 3D tensors, i.e. add batch dimension)
+    # Stack and pad features and masks (convert 2D to 3D tensors)
     lengths = [
         X.shape[0] for X in features
     ]  # original sequence length for each time series
@@ -93,7 +93,7 @@ def collate_unsuperv(data, max_len=None):
     )  # (batch_size, padded_length, feat_dim)
     target_masks = torch.zeros_like(
         X, dtype=torch.bool
-    )  # (batch_size, padded_length, feat_dim) masks related to objective
+    )  
     for i in range(batch_size):
         end = min(lengths[i], max_len)
         X[i, :end, :] = features[i][:end, :]
@@ -104,8 +104,8 @@ def collate_unsuperv(data, max_len=None):
 
     padding_masks = padding_mask(
         torch.tensor(lengths, dtype=torch.long), max_len=max_len
-    )  # (batch_size, padded_length) boolean tensor, "1" means keep
-    target_masks = ~target_masks  # inverse logic: 0 now means ignore, 1 means predict
+    )  
+    target_masks = ~target_masks  
 
     return X, targets, target_masks, padding_masks, IDs
 

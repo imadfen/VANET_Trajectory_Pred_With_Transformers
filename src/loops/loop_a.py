@@ -74,7 +74,7 @@ class DiscrepancyMonitor:
         self.beacon_hz_low  = beacon_hz_low
         self.beacon_hz_high = beacon_hz_high
 
-    # ------------------------------------------------------------------
+
     def check(
         self,
         predicted_window: np.ndarray,
@@ -124,7 +124,7 @@ class DiscrepancyMonitor:
         )
         return LoopADecision(flag=flag, residual=residual, beacon_hz=beacon_hz)
 
-    # ------------------------------------------------------------------
+
     def check_batch(
         self,
         predicted_batch: np.ndarray,
